@@ -1,0 +1,6 @@
+{
+  "name": "SliceMatic",
+  "description": "SliceMatic is a premium production-grade pizza ordering Client Portal with interactive visualizer, dynamic QR codes, AI Flavor Guru upsells, and Supabase database integration.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
