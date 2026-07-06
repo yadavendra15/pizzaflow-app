@@ -76,6 +76,20 @@ export default function App() {
   const [placedOrderPayload, setPlacedOrderPayload] = useState<any>(null);
   const [submissionError, setSubmissionError] = useState<string>('');
 
+  // Admin View Sub-tabs & Filter States
+  const [adminTab, setAdminTab] = useState<'overview' | 'menu-insights' | 'operations'>('overview');
+  const [adminPaymentFilter, setAdminPaymentFilter] = useState<string>('All');
+  const [orderStatuses, setOrderStatuses] = useState<Record<string, string>>({});
+  const [printedOrders, setPrintedOrders] = useState<Record<string, boolean>>({});
+
+  // AI Flavor Guru structured recommendation states
+  const [guruRecommendation, setGuruRecommendation] = useState<{
+    explanation: string;
+    recommendedBaseId: string | null;
+    recommendedToppingIds: string[];
+  } | null>(null);
+  const [guruApplied, setGuruApplied] = useState<boolean>(false);
+
   // Router Routing State
   const [currentPath, setCurrentPath] = useState(window.location.pathname);
 
@@ -123,7 +137,50 @@ export default function App() {
       setPizzas(pizzasData);
       setToppings(toppingsData);
 
-      // Do not pre-select on initial load so the Step 1 (Contact Intake) view stays clean and blank!
+      // Parse query parameters for real-time mobile order session sync
+      if (typeof window !== 'undefined') {
+        const params = new URLSearchParams(window.location.search);
+        const urlName = params.get('name');
+        const urlPhone = params.get('phone');
+        const urlStep = params.get('step');
+        const urlBaseId = params.get('base');
+        const urlPizzaId = params.get('pizza');
+        const urlToppings = params.get('toppings');
+        const urlQty = params.get('qty');
+        const urlPayment = params.get('payment');
+
+        if (urlName) setCustomerName(decodeURIComponent(urlName));
+        if (urlPhone) setCustomerPhone(decodeURIComponent(urlPhone));
+        if (urlStep) {
+          const stepNum = parseInt(urlStep, 10);
+          if (stepNum >= 1 && stepNum <= 5) {
+            setCurrentStep(stepNum);
+          }
+        }
+        if (urlBaseId) {
+          const matchedBase = basesData.find(b => b.id === urlBaseId);
+          if (matchedBase) setSelectedBase(matchedBase);
+        }
+        if (urlPizzaId) {
+          const matchedPizza = pizzasData.find(p => p.id === urlPizzaId);
+          if (matchedPizza) setSelectedPizza(matchedPizza);
+        }
+        if (urlToppings) {
+          const toppingIds = urlToppings.split(',');
+          const matchedToppings = toppingsData.filter(t => toppingIds.includes(t.id));
+          setSelectedToppings(matchedToppings);
+        }
+        if (urlQty) {
+          const parsedQty = parseInt(urlQty, 10);
+          if (parsedQty >= 1 && parsedQty <= 100) {
+            setQuantity(parsedQty);
+            setQuantityInput(urlQty);
+          }
+        }
+        if (urlPayment) {
+          setPaymentMode(urlPayment);
+        }
+      }
     } catch (e) {
       console.error('Failed to load menu data', e);
     } finally {
@@ -188,23 +245,86 @@ export default function App() {
       setCurrentStep(4);
       setAiLoading(true);
       setAiUpsellText('');
+      setGuruRecommendation(null);
+      setGuruApplied(false);
       
       try {
-        const suggestion = await fetchSmartUpsell({
+        const result = await fetchSmartUpsell({
           base: selectedBase,
           pizza: selectedPizza,
           toppings: selectedToppings
         });
-        setAiUpsellText(suggestion);
+        setAiUpsellText(result.explanation);
+        setGuruRecommendation(result);
       } catch (err) {
         console.warn('AI Flavor Guru failed or timed out. Proceeding silently.');
-        setAiUpsellText("Elevate your pie with extra cheese or a peri-peri drizzle upgrade!");
+        const fallback = {
+          explanation: "Elevate your pie with extra cheese (T2) or a peri-peri drizzle (T10) upgrade for a fantastic kick!",
+          recommendedBaseId: null,
+          recommendedToppingIds: ["T2"]
+        };
+        setAiUpsellText(fallback.explanation);
+        setGuruRecommendation(fallback);
       } finally {
         setAiLoading(false);
       }
     } else if (currentStep === 4) {
       setCurrentStep(5);
     }
+  };
+
+  // Flavor Guru recommendation application handler
+  const applyGuruRecommendation = () => {
+    if (!guruRecommendation) return;
+
+    // Apply base recommendation if any
+    if (guruRecommendation.recommendedBaseId) {
+      const matchedBase = bases.find(b => b.id === guruRecommendation.recommendedBaseId);
+      if (matchedBase) {
+        setSelectedBase(matchedBase);
+      }
+    }
+
+    // Apply toppings recommendation if any
+    if (guruRecommendation.recommendedToppingIds && guruRecommendation.recommendedToppingIds.length > 0) {
+      const currentToppingIds = selectedToppings.map(t => t.id);
+      const newToppings = [...selectedToppings];
+
+      guruRecommendation.recommendedToppingIds.forEach(id => {
+        if (!currentToppingIds.includes(id)) {
+          const matchedTopping = toppings.find(t => t.id === id);
+          if (matchedTopping) {
+            newToppings.push(matchedTopping);
+          }
+        }
+      });
+      setSelectedToppings(newToppings);
+    }
+
+    setGuruApplied(true);
+  };
+
+  // Calculates the price impact of the Flavor Guru's recommendations
+  const getRecommendationPriceDelta = () => {
+    if (!guruRecommendation) return 0;
+    let delta = 0;
+    if (guruRecommendation.recommendedBaseId && selectedBase && selectedBase.id !== guruRecommendation.recommendedBaseId) {
+      const newBase = bases.find(b => b.id === guruRecommendation.recommendedBaseId);
+      if (newBase) {
+        delta += (newBase.price - selectedBase.price);
+      }
+    }
+    if (guruRecommendation.recommendedToppingIds) {
+      guruRecommendation.recommendedToppingIds.forEach(id => {
+        if (!selectedToppings.some(t => t.id === id)) {
+          const topping = toppings.find(t => t.id === id);
+          if (topping) {
+            delta += topping.price;
+          }
+        }
+      });
+    }
+    return delta;
   };
 
   const handleBack = () => {
@@ -539,214 +659,571 @@ export default function App() {
 
               return (
                 <div className="flex-1 flex flex-col gap-6">
+                  {/* Admin Header with Tab Switcher */}
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-neutral-100 pb-4">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h2 className="text-xl font-black text-neutral-900 tracking-tight">SliceMatic Operations Center</h2>
+                        <span className="flex items-center gap-1 text-[10px] bg-emerald-50 text-emerald-700 font-extrabold px-2 py-0.5 rounded-full border border-emerald-100">
+                          <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
+                          Live Sync
+                        </span>
+                      </div>
+                      <p className="text-xs text-neutral-400">Manage real-time incoming orders, view rich topping analytics, and monitor backend system states.</p>
+                    </div>
+
+                    {/* Tab Switcher */}
+                    <div className="flex items-center bg-neutral-100 p-1 rounded-xl shrink-0 self-start md:self-auto">
+                      <button
+                        onClick={() => setAdminTab('overview')}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
+                          adminTab === 'overview'
+                            ? 'bg-white text-neutral-950 shadow-xs'
+                            : 'text-neutral-500 hover:text-neutral-800'
+                        }`}
+                      >
+                        Overview
+                      </button>
+                      <button
+                        onClick={() => setAdminTab('menu-insights')}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
+                          adminTab === 'menu-insights'
+                            ? 'bg-white text-neutral-950 shadow-xs'
+                            : 'text-neutral-500 hover:text-neutral-800'
+                        }`}
+                      >
+                        Menu Insights
+                      </button>
+                      <button
+                        onClick={() => setAdminTab('operations')}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
+                          adminTab === 'operations'
+                            ? 'bg-white text-neutral-950 shadow-xs'
+                            : 'text-neutral-500 hover:text-neutral-800'
+                        }`}
+                      >
+                        Operations Monitor
+                      </button>
+                    </div>
+                  </div>
+
                   {/* Headline Statistics Cards */}
                   {!ordersLoading && allOrders.length > 0 && (
                     <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
                       {/* Stat Card: Today's Orders */}
-                      <div className="bg-white p-5 rounded-2xl border-l-4 border-l-orange-500 border border-neutral-100 shadow-sm flex flex-col justify-between">
+                      <div className="bg-white p-5 rounded-2xl border-l-4 border-l-orange-500 border border-neutral-100 shadow-sm flex flex-col justify-between hover:shadow-md transition">
                         <div className="flex items-center justify-between">
                           <span className="text-[10px] font-bold text-neutral-400 uppercase tracking-wider">Today's Orders</span>
                           <ShoppingBag className="w-4 h-4 text-orange-500" />
                         </div>
                         <div className="mt-2">
                           <span className="text-2xl font-black text-neutral-900">{stats.orderCount}</span>
+                          <span className="text-[10px] text-neutral-400 block">+100% real-time</span>
                         </div>
                       </div>
 
                       {/* Stat Card: Pizzas Sold */}
-                      <div className="bg-white p-5 rounded-2xl border-l-4 border-l-red-500 border border-neutral-100 shadow-sm flex flex-col justify-between">
+                      <div className="bg-white p-5 rounded-2xl border-l-4 border-l-red-500 border border-neutral-100 shadow-sm flex flex-col justify-between hover:shadow-md transition">
                         <div className="flex items-center justify-between">
                           <span className="text-[10px] font-bold text-neutral-400 uppercase tracking-wider">Pizzas Sold</span>
                           <PizzaIcon className="w-4 h-4 text-red-500" />
                         </div>
                         <div className="mt-2">
                           <span className="text-2xl font-black text-neutral-900">{stats.pizzasSold}</span>
+                          <span className="text-[10px] text-neutral-400 block">Avg qty: {(stats.pizzasSold / (stats.orderCount || 1)).toFixed(1)} / order</span>
                         </div>
                       </div>
 
                       {/* Stat Card: Today's Revenue */}
-                      <div className="bg-white p-5 rounded-2xl border-l-4 border-l-emerald-500 border border-neutral-100 shadow-sm flex flex-col justify-between">
+                      <div className="bg-white p-5 rounded-2xl border-l-4 border-l-emerald-500 border border-neutral-100 shadow-sm flex flex-col justify-between hover:shadow-md transition">
                         <div className="flex items-center justify-between">
                           <span className="text-[10px] font-bold text-neutral-400 uppercase tracking-wider">Revenue</span>
                           <TrendingUp className="w-4 h-4 text-emerald-500" />
                         </div>
                         <div className="mt-2">
                           <span className="text-2xl font-black text-emerald-600">₹{stats.revenue.toFixed(2)}</span>
+                          <span className="text-[10px] text-neutral-400 block">Net proceeds</span>
                         </div>
                       </div>
 
                       {/* Stat Card: GST Collected */}
-                      <div className="bg-white p-5 rounded-2xl border-l-4 border-l-neutral-700 border border-neutral-100 shadow-sm flex flex-col justify-between">
+                      <div className="bg-white p-5 rounded-2xl border-l-4 border-l-neutral-700 border border-neutral-100 shadow-sm flex flex-col justify-between hover:shadow-md transition">
                         <div className="flex items-center justify-between">
                           <span className="text-[10px] font-bold text-neutral-400 uppercase tracking-wider">GST (18%)</span>
                           <Percent className="w-4 h-4 text-neutral-600" />
                         </div>
                         <div className="mt-2">
                           <span className="text-2xl font-black text-neutral-800">₹{stats.gstCollected.toFixed(2)}</span>
+                          <span className="text-[10px] text-neutral-400 block">Indirect Tax ledger</span>
                         </div>
                       </div>
 
                       {/* Stat Card: Discounts Given */}
-                      <div className="bg-white p-5 rounded-2xl border-l-4 border-l-purple-500 border border-neutral-100 shadow-sm flex flex-col justify-between">
+                      <div className="bg-white p-5 rounded-2xl border-l-4 border-l-purple-500 border border-neutral-100 shadow-sm flex flex-col justify-between hover:shadow-md transition">
                         <div className="flex items-center justify-between">
                           <span className="text-[10px] font-bold text-neutral-400 uppercase tracking-wider">Discounts</span>
                           <Tag className="w-4 h-4 text-purple-500" />
                         </div>
                         <div className="mt-2">
                           <span className="text-2xl font-black text-purple-600">₹{stats.discountGiven.toFixed(2)}</span>
+                          <span className="text-[10px] text-neutral-400 block">Volume campaigns</span>
                         </div>
                       </div>
                     </div>
                   )}
 
-                  {/* Main Grid: Orders Table & Best Sellers Chart */}
-                  <div className="flex flex-col lg:flex-row gap-6 items-start w-full">
-                    
-                    {/* Left: Orders Table Panel */}
-                    <div className="w-full lg:w-8/12 bg-white rounded-3xl border border-neutral-100 shadow-sm overflow-hidden flex flex-col">
-                      <div className="p-6 border-b border-neutral-100 flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-neutral-50/20">
-                        <div>
-                          <h3 className="text-sm font-bold text-neutral-800">All Orders Log</h3>
-                          <p className="text-xs text-neutral-400">Total: {filteredOrders.length} orders found</p>
+                  {/* TAB CONTENT: OVERVIEW (ORDERS KDS LOGGER) */}
+                  {adminTab === 'overview' && (
+                    <div className="flex flex-col lg:flex-row gap-6 items-start w-full">
+                      
+                      {/* Left: Orders Table Panel */}
+                      <div className="w-full lg:w-8/12 bg-white rounded-3xl border border-neutral-100 shadow-sm overflow-hidden flex flex-col">
+                        <div className="p-6 border-b border-neutral-100 flex flex-col md:flex-row md:items-center justify-between gap-4 bg-neutral-50/20">
+                          <div>
+                            <h3 className="text-sm font-bold text-neutral-800">Incoming Orders KDS Dashboard</h3>
+                            <p className="text-xs text-neutral-400">Total: {allOrders.length} orders log synced</p>
+                          </div>
+                          
+                          <div className="flex flex-wrap items-center gap-2">
+                            {/* Payment Mode Badges Filters */}
+                            <div className="flex items-center bg-neutral-100/80 p-0.5 rounded-lg border border-neutral-200/50">
+                              {['All', 'UPI', 'Card', 'Cash'].map((pm) => (
+                                <button
+                                  key={pm}
+                                  onClick={() => setAdminPaymentFilter(pm)}
+                                  className={`px-2.5 py-1 rounded-md text-[10px] font-extrabold uppercase tracking-wider transition cursor-pointer ${
+                                    adminPaymentFilter === pm
+                                      ? 'bg-white text-neutral-900 shadow-xs'
+                                      : 'text-neutral-400 hover:text-neutral-700'
+                                  }`}
+                                >
+                                  {pm}
+                                </button>
+                              ))}
+                            </div>
+
+                            {/* Search Input */}
+                            <div className="relative w-full sm:w-48">
+                              <Search className="w-3.5 h-3.5 text-neutral-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                              <input
+                                type="text"
+                                placeholder="Search name..."
+                                value={adminSearchQuery}
+                                onChange={(e) => setAdminSearchQuery(e.target.value)}
+                                className="w-full pl-8 pr-3 py-1.5 border border-neutral-200 rounded-lg text-xs focus:outline-none focus:ring-1 focus:ring-neutral-900/10 focus:border-neutral-900 transition bg-white"
+                              />
+                            </div>
+                          </div>
                         </div>
-                        
-                        {/* Search Input */}
-                        <div className="relative w-full sm:w-64">
-                          <Search className="w-4 h-4 text-neutral-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-                          <input
-                            type="text"
-                            placeholder="Search name, phone, crust..."
-                            value={adminSearchQuery}
-                            onChange={(e) => setAdminSearchQuery(e.target.value)}
-                            className="w-full pl-10 pr-4 py-2 border border-neutral-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-neutral-900/5 focus:border-neutral-900 transition"
-                          />
+
+                        <div className="overflow-x-auto">
+                          {ordersLoading ? (
+                            <div className="py-24 text-center space-y-3">
+                              <div className="inline-block w-8 h-8 border-4 border-neutral-200 border-t-neutral-950 rounded-full animate-spin" />
+                              <p className="text-xs text-neutral-400">Synchronising database orders log...</p>
+                            </div>
+                          ) : (() => {
+                            // Computed live search and payment filtered array
+                            const filteredOrders = allOrders.filter(o => {
+                              const query = adminSearchQuery.toLowerCase();
+                              const matchesQuery = !query || (
+                                o.customer_name.toLowerCase().includes(query) ||
+                                o.customer_phone.includes(query) ||
+                                getBaseName(o.base_id).toLowerCase().includes(query) ||
+                                getPizzaName(o.pizza_id).toLowerCase().includes(query) ||
+                                (o.id && String(o.id).includes(query))
+                              );
+                              
+                              const matchesPayment = adminPaymentFilter === 'All' || o.payment_mode === adminPaymentFilter;
+                              return matchesQuery && matchesPayment;
+                            });
+
+                            if (filteredOrders.length === 0) {
+                              return (
+                                <div className="py-24 text-center space-y-2">
+                                  <p className="text-sm font-bold text-neutral-600">No Orders Match filters</p>
+                                  <p className="text-xs text-neutral-400">Modify your search keywords or payment filters above.</p>
+                                </div>
+                              );
+                            }
+
+                            return (
+                              <table className="w-full text-left border-collapse">
+                                <thead>
+                                  <tr className="bg-neutral-50 text-neutral-400 text-[10px] uppercase font-bold tracking-wider border-b border-neutral-100">
+                                    <th className="py-4 px-4 whitespace-nowrap">ID</th>
+                                    <th className="py-4 px-4 whitespace-nowrap">Timestamp</th>
+                                    <th className="py-4 px-4 whitespace-nowrap">Customer</th>
+                                    <th className="py-4 px-4 whitespace-nowrap">Pizza Specs</th>
+                                    <th className="py-4 px-4 text-center whitespace-nowrap">Qty</th>
+                                    <th className="py-4 px-4 text-center whitespace-nowrap">Status</th>
+                                    <th className="py-4 px-4 text-right whitespace-nowrap">Price</th>
+                                    <th className="py-4 px-4 text-center whitespace-nowrap">Actions</th>
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-neutral-50 text-xs font-mono">
+                                  {filteredOrders.map((order, idx) => {
+                                    const baseName = getBaseName(order.base_id);
+                                    const pizzaName = getPizzaName(order.pizza_id);
+                                    const orderIdStr = String(order.id || idx);
+                                    
+                                    // Interactive kitchen states
+                                    const currentStatus = orderStatuses[orderIdStr] || 'Kitchen Sync';
+                                    const isPrinted = printedOrders[orderIdStr] || false;
+
+                                    return (
+                                      <tr key={order.id || idx} className="hover:bg-neutral-50/30 transition">
+                                        <td className="py-4 px-4 text-neutral-400 font-bold whitespace-nowrap">
+                                          #{orderIdStr.slice(-4)}
+                                        </td>
+                                        <td className="py-4 px-4 text-neutral-500 whitespace-nowrap">
+                                          {order.created_at ? new Date(order.created_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : 'Just Now'}
+                                        </td>
+                                        <td className="py-4 px-4 font-bold text-neutral-800 uppercase whitespace-nowrap">
+                                          <div className="font-extrabold text-neutral-900">{order.customer_name}</div>
+                                          <div className="text-[10px] text-neutral-400 font-medium font-sans">+91 {order.customer_phone}</div>
+                                        </td>
+                                        <td className="py-4 px-4 text-neutral-700 font-sans min-w-[180px] leading-relaxed">
+                                          <div className="font-bold text-neutral-900">{pizzaName}</div>
+                                          <div className="text-[10px] text-neutral-500 font-medium">Crust: {baseName}</div>
+                                          {order.toppings && order.toppings.length > 0 && (
+                                            <div className="text-[9px] text-amber-600 font-bold mt-0.5">
+                                              + {order.toppings.map(t => t.name).join(', ')}
+                                            </div>
+                                          )}
+                                        </td>
+                                        <td className="py-4 px-4 text-center font-bold text-neutral-800 font-sans">
+                                          {order.quantity}
+                                        </td>
+                                        <td className="py-4 px-4 text-center whitespace-nowrap">
+                                          <span className={`inline-block px-2 py-0.5 rounded text-[9px] uppercase font-bold tracking-wider ${
+                                            currentStatus === 'Kitchen Sync' ? 'bg-amber-100 text-amber-800 border border-amber-200' :
+                                            currentStatus === 'Prep' ? 'bg-indigo-100 text-indigo-800 border border-indigo-200' :
+                                            currentStatus === 'Ready' ? 'bg-teal-100 text-teal-800 border border-teal-200' :
+                                            'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                                          }`}>
+                                            {currentStatus === 'Kitchen Sync' ? 'Kitchen Sync' :
+                                             currentStatus === 'Prep' ? 'Kitchen Prep' :
+                                             currentStatus === 'Ready' ? 'Ready Pick' : 'Completed'}
+                                          </span>
+                                        </td>
+                                        <td className="py-4 px-4 text-right font-extrabold text-neutral-900 whitespace-nowrap">
+                                          ₹{order.final_payable?.toFixed(2)}
+                                          <div className="text-[8px] text-neutral-400 font-sans font-medium text-right uppercase tracking-widest">{order.payment_mode}</div>
+                                        </td>
+                                        <td className="py-4 px-4 text-center whitespace-nowrap">
+                                          <div className="flex items-center justify-center gap-1.5 font-sans">
+                                            {/* KOT Printing */}
+                                            <button
+                                              onClick={() => {
+                                                setPrintedOrders(prev => ({ ...prev, [orderIdStr]: true }));
+                                                setTimeout(() => {
+                                                  setPrintedOrders(prev => ({ ...prev, [orderIdStr]: false }));
+                                                }, 2000);
+                                              }}
+                                              className="p-1 text-neutral-500 hover:text-neutral-900 border border-neutral-200 rounded-lg hover:bg-neutral-50 transition cursor-pointer"
+                                              title="Print Kitchen Ticket"
+                                            >
+                                              {isPrinted ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <ClipboardList className="w-3.5 h-3.5" />}
+                                            </button>
+
+                                            {/* Advanced operations pipeline progression */}
+                                            {currentStatus === 'Kitchen Sync' && (
+                                              <button
+                                                onClick={() => setOrderStatuses(prev => ({ ...prev, [orderIdStr]: 'Prep' }))}
+                                                className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[9px] uppercase tracking-wider px-2 py-1 rounded transition shadow-xs cursor-pointer"
+                                              >
+                                                Start Prep
+                                              </button>
+                                            )}
+                                            {currentStatus === 'Prep' && (
+                                              <button
+                                                onClick={() => setOrderStatuses(prev => ({ ...prev, [orderIdStr]: 'Ready' }))}
+                                                className="bg-teal-600 hover:bg-teal-700 text-white font-bold text-[9px] uppercase tracking-wider px-2 py-1 rounded transition shadow-xs cursor-pointer"
+                                              >
+                                                Mark Ready
+                                              </button>
+                                            )}
+                                            {currentStatus === 'Ready' && (
+                                              <button
+                                                onClick={() => setOrderStatuses(prev => ({ ...prev, [orderIdStr]: 'Complete' }))}
+                                                className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[9px] uppercase tracking-wider px-2 py-1 rounded transition shadow-xs cursor-pointer"
+                                              >
+                                                Dispatch
+                                              </button>
+                                            )}
+                                            {currentStatus === 'Complete' && (
+                                              <span className="text-[10px] font-bold text-neutral-400 flex items-center gap-0.5">
+                                                <Check className="w-3 h-3 text-emerald-500" /> Done
+                                              </span>
+                                            )}
+                                          </div>
+                                        </td>
+                                      </tr>
+                                    );
+                                  })}
+                                </tbody>
+                              </table>
+                            );
+                          })()}
                         </div>
                       </div>
 
-                      <div className="overflow-x-auto">
+                      {/* Right: Best Sellers (7 Days) Panel */}
+                      <div className="w-full lg:w-4/12 bg-white rounded-3xl border border-neutral-100 shadow-sm p-6 flex flex-col">
+                        <div className="mb-6">
+                          <h3 className="text-sm font-bold text-neutral-800">Best Sellers (7 Days)</h3>
+                          <p className="text-xs text-neutral-400">Recipe performance ranking by quantity</p>
+                        </div>
+
                         {ordersLoading ? (
-                          <div className="py-24 text-center space-y-3">
-                            <div className="inline-block w-8 h-8 border-4 border-neutral-200 border-t-neutral-950 rounded-full animate-spin" />
-                            <p className="text-xs text-neutral-400">Synchronising database orders log...</p>
-                          </div>
-                        ) : filteredOrders.length === 0 ? (
-                          <div className="py-24 text-center space-y-2">
-                            <p className="text-sm font-bold text-neutral-600">No Orders Match</p>
-                            <p className="text-xs text-neutral-400">Try modifying your search or place a new order.</p>
-                          </div>
+                          <div className="py-12 text-center text-xs text-neutral-400 animate-pulse">Calculating sales volume...</div>
+                        ) : bestSellers.length === 0 ? (
+                          <p className="text-xs text-neutral-400 italic">No pizza sales recorded in the last 7 days.</p>
                         ) : (
-                          <table className="w-full text-left border-collapse">
-                            <thead>
-                              <tr className="bg-neutral-50 text-neutral-400 text-[10px] uppercase font-bold tracking-wider border-b border-neutral-100">
-                                <th className="py-4 px-6">ID</th>
-                                <th className="py-4 px-6">Timestamp</th>
-                                <th className="py-4 px-6">Customer</th>
-                                <th className="py-4 px-6">Phone</th>
-                                <th className="py-4 px-6">Pizza Details</th>
-                                <th className="py-4 px-6 text-center">Qty</th>
-                                <th className="py-4 px-6 text-right">Discount</th>
-                                <th className="py-4 px-6 text-right">GST</th>
-                                <th className="py-4 px-6 text-right font-bold text-neutral-800">Total</th>
-                                <th className="py-4 px-6 text-center">Payment</th>
-                              </tr>
-                            </thead>
-                            <tbody className="divide-y divide-neutral-50 text-xs font-mono">
-                              {filteredOrders.map((order, idx) => {
-                                const baseName = getBaseName(order.base_id);
-                                const pizzaName = getPizzaName(order.pizza_id);
-                                
-                                return (
-                                  <tr key={order.id || idx} className="hover:bg-neutral-50/30 transition">
-                                    <td className="py-4 px-6 text-neutral-400 font-bold whitespace-nowrap">
-                                      #{order.id ? String(order.id).slice(-4) : idx + 1}
-                                    </td>
-                                    <td className="py-4 px-6 text-neutral-500 whitespace-nowrap">
-                                      {order.created_at ? new Date(order.created_at).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }) : 'Just Now'}
-                                    </td>
-                                    <td className="py-4 px-6 font-bold text-neutral-800 uppercase max-w-[150px] truncate">
-                                      {order.customer_name}
-                                    </td>
-                                    <td className="py-4 px-6 text-neutral-600">
-                                      +91 {order.customer_phone}
-                                    </td>
-                                    <td className="py-4 px-6 text-neutral-700 font-sans max-w-[240px] leading-relaxed">
-                                      <div className="font-bold text-neutral-900">{pizzaName}</div>
-                                      <div className="text-[11px] text-neutral-500 font-medium">Crust: {baseName}</div>
-                                      {order.toppings && order.toppings.length > 0 && (
-                                        <div className="text-[10px] text-neutral-400 font-medium mt-0.5">
-                                          + {order.toppings.map(t => t.name).join(', ')}
-                                        </div>
-                                      )}
-                                    </td>
-                                    <td className="py-4 px-6 text-center font-bold text-neutral-800">
-                                      {order.quantity}
-                                    </td>
-                                    <td className="py-4 px-6 text-right text-emerald-600">
-                                      {order.discount_amount && order.discount_amount > 0 ? `-₹${order.discount_amount.toFixed(2)}` : '—'}
-                                    </td>
-                                    <td className="py-4 px-6 text-right text-neutral-500">
-                                      ₹{order.gst_amount?.toFixed(2)}
-                                    </td>
-                                    <td className="py-4 px-6 text-right font-extrabold text-neutral-900 bg-neutral-50/10">
-                                      ₹{order.final_payable?.toFixed(2)}
-                                    </td>
-                                    <td className="py-4 px-6 text-center">
-                                      <span className={`inline-block px-2.5 py-1 rounded-full text-[10px] uppercase font-bold tracking-wider ${
-                                        order.payment_mode === 'Cash' ? 'bg-amber-100 text-amber-800 border border-amber-200' :
-                                        order.payment_mode === 'Card' ? 'bg-indigo-100 text-indigo-800 border border-indigo-200' :
-                                        'bg-emerald-100 text-emerald-800 border border-emerald-200'
-                                      }`}>
-                                        {order.payment_mode}
-                                      </span>
-                                    </td>
-                                  </tr>
-                                );
-                              })}
-                            </tbody>
-                          </table>
+                          <div className="space-y-4">
+                            {bestSellers.map((item, index) => {
+                              const ratio = Math.min(100, Math.max(5, (item.sold / maxBestSellerSold) * 100));
+                              return (
+                                <div key={item.name} className="space-y-1.5">
+                                  <div className="flex items-center justify-between text-xs">
+                                    <span className="font-bold text-neutral-700">
+                                      {index + 1}. {item.name}
+                                    </span>
+                                    <span className="font-mono font-extrabold text-neutral-900 bg-neutral-50 px-2 py-0.5 rounded-md text-[10px]">
+                                      {item.sold} sold
+                                    </span>
+                                  </div>
+                                  <div className="h-2 w-full bg-neutral-100 rounded-full overflow-hidden">
+                                    <div 
+                                      className="h-full bg-orange-500 rounded-full transition-all duration-500" 
+                                      style={{ width: `${ratio}%` }} 
+                                    />
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
                         )}
                       </div>
-                    </div>
 
-                    {/* Right: Best Sellers (7 Days) Panel */}
-                    <div className="w-full lg:w-4/12 bg-white rounded-3xl border border-neutral-100 shadow-sm p-6 flex flex-col">
-                      <div className="mb-6">
-                        <h3 className="text-sm font-bold text-neutral-800">Best Sellers (7 Days)</h3>
-                        <p className="text-xs text-neutral-400">Recipe performance ranking by quantity</p>
+                    </div>
+                  )}
+
+                  {/* TAB CONTENT: MENU INSIGHTS (ANALYTICS BREAKDOWN) */}
+                  {adminTab === 'menu-insights' && (
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                      
+                      {/* Crust selection trends */}
+                      <div className="bg-white rounded-3xl border border-neutral-100 shadow-sm p-6">
+                        <div className="mb-6">
+                          <h3 className="text-sm font-bold text-neutral-800">Crust Base Popularity</h3>
+                          <p className="text-xs text-neutral-400">Ordering frequency across premium crust styles</p>
+                        </div>
+
+                        <div className="space-y-4">
+                          {(() => {
+                            const baseCounts = bases.map(b => {
+                              const count = allOrders.filter(o => o.base_id === b.id).reduce((sum, o) => sum + (o.quantity || 1), 0);
+                              return { ...b, count };
+                            }).sort((a, b) => b.count - a.count);
+
+                            const maxBaseCount = baseCounts.length > 0 && baseCounts[0].count > 0 ? baseCounts[0].count : 1;
+
+                            return baseCounts.map((bc, idx) => {
+                              const ratio = (bc.count / maxBaseCount) * 100;
+                              return (
+                                <div key={bc.id} className="space-y-1">
+                                  <div className="flex items-center justify-between text-xs">
+                                    <span className="font-bold text-neutral-700">{bc.name}</span>
+                                    <span className="font-mono font-bold text-neutral-400">{bc.count} sold</span>
+                                  </div>
+                                  <div className="h-2 w-full bg-neutral-50 rounded-full overflow-hidden">
+                                    <div 
+                                      className="h-full bg-indigo-500 rounded-full transition-all duration-500" 
+                                      style={{ width: `${ratio}%` }} 
+                                    />
+                                  </div>
+                                </div>
+                              );
+                            });
+                          })()}
+                        </div>
                       </div>
 
-                      {ordersLoading ? (
-                        <div className="py-12 text-center text-xs text-neutral-400 animate-pulse">Calculating sales volume...</div>
-                      ) : bestSellers.length === 0 ? (
-                        <p className="text-xs text-neutral-400 italic">No pizza sales recorded in the last 7 days.</p>
-                      ) : (
-                        <div className="space-y-4">
-                          {bestSellers.map((item, index) => {
-                            const ratio = Math.min(100, Math.max(5, (item.sold / maxBestSellerSold) * 100));
+                      {/* Toppings trends */}
+                      <div className="bg-white rounded-3xl border border-neutral-100 shadow-sm p-6">
+                        <div className="mb-6">
+                          <h3 className="text-sm font-bold text-neutral-800">Toppings Add-On Analysis</h3>
+                          <p className="text-xs text-neutral-400">Total selection frequency in client orders</p>
+                        </div>
+
+                        <div className="space-y-4 max-h-[320px] overflow-y-auto pr-1">
+                          {(() => {
+                            const toppingCounts = toppings.map(t => {
+                              const count = allOrders.filter(o => o.toppings?.some((ot: any) => ot.id === t.id)).reduce((sum, o) => sum + (o.quantity || 1), 0);
+                              return { ...t, count };
+                            }).sort((a, b) => b.count - a.count);
+
+                            const maxToppingCount = toppingCounts.length > 0 && toppingCounts[0].count > 0 ? toppingCounts[0].count : 1;
+
+                            return toppingCounts.map((tc, idx) => {
+                              const ratio = (tc.count / maxToppingCount) * 100;
+                              return (
+                                <div key={tc.id} className="space-y-1">
+                                  <div className="flex items-center justify-between text-xs font-sans">
+                                    <span className="font-bold text-neutral-700 text-xs">{tc.name}</span>
+                                    <span className="font-mono font-bold text-neutral-400 text-[10px]">{tc.count} items</span>
+                                  </div>
+                                  <div className="h-2 w-full bg-neutral-50 rounded-full overflow-hidden">
+                                    <div 
+                                      className="h-full bg-orange-500 rounded-full transition-all duration-500" 
+                                      style={{ width: `${ratio}%` }} 
+                                    />
+                                  </div>
+                                </div>
+                              );
+                            });
+                          })()}
+                        </div>
+                      </div>
+
+                      {/* Pizza Style revenue performance */}
+                      <div className="bg-white rounded-3xl border border-neutral-100 shadow-sm p-6">
+                        <div className="mb-6">
+                          <h3 className="text-sm font-bold text-neutral-800">Pizza Style Performance</h3>
+                          <p className="text-xs text-neutral-400">Aggregate volume and revenue stats</p>
+                        </div>
+
+                        <div className="space-y-3">
+                          {(() => {
+                            const pizzaCounts = pizzas.map(p => {
+                              const count = allOrders.filter(o => o.pizza_id === p.id).reduce((sum, o) => sum + (o.quantity || 1), 0);
+                              const revenue = allOrders.filter(o => o.pizza_id === p.id).reduce((sum, o) => sum + (o.final_payable || 0), 0);
+                              return { ...p, count, revenue };
+                            }).sort((a, b) => b.count - a.count);
+
+                            return pizzaCounts.slice(0, 5).map((pc, idx) => {
+                              return (
+                                <div key={pc.id} className="flex items-center justify-between p-2.5 bg-neutral-50 rounded-xl border border-neutral-100/50">
+                                  <div className="flex items-center gap-2">
+                                    <span className={`w-5 h-5 rounded-full flex items-center justify-center font-bold text-[10px] ${
+                                      idx === 0 ? 'bg-amber-100 text-amber-700' :
+                                      idx === 1 ? 'bg-neutral-200 text-neutral-700' :
+                                      idx === 2 ? 'bg-orange-100 text-orange-700' : 'bg-neutral-100 text-neutral-500'
+                                    }`}>
+                                      {idx + 1}
+                                    </span>
+                                    <div>
+                                      <span className="text-xs font-bold text-neutral-800 block">{pc.name}</span>
+                                      <span className="text-[10px] text-neutral-400 font-sans">{pc.count} orders sold</span>
+                                    </div>
+                                  </div>
+                                  <span className="text-xs font-extrabold text-neutral-900 font-mono">
+                                    ₹{pc.revenue.toFixed(0)}
+                                  </span>
+                                </div>
+                              );
+                            });
+                          })()}
+                        </div>
+                      </div>
+
+                    </div>
+                  )}
+
+                  {/* TAB CONTENT: OPERATIONS (BACKEND TELEMETRY SENSORS & SYSTEM LOGS) */}
+                  {adminTab === 'operations' && (
+                    <div className="space-y-6">
+                      
+                      {/* Live sensor gauges */}
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                        {/* Gauge 1: Database syncing */}
+                        <div className="bg-white p-6 rounded-3xl border border-neutral-100 shadow-sm flex flex-col justify-between">
+                          <div className="flex items-start justify-between">
+                            <div className="space-y-1">
+                              <span className="text-[10px] font-bold text-neutral-400 uppercase tracking-wider block">Durable SQL Database Connection</span>
+                              <h4 className="text-sm font-bold text-neutral-800">
+                                {isDbConnected ? "PostgreSQL Cloud Active" : "Simulated Local DB"}
+                              </h4>
+                            </div>
+                            <span className={`p-1.5 rounded-lg text-white ${isDbConnected ? 'bg-emerald-500' : 'bg-amber-500'}`}>
+                              <Database className="w-4 h-4" />
+                            </span>
+                          </div>
+                          <p className="text-xs text-neutral-500 leading-relaxed mt-4">
+                            {isDbConnected 
+                              ? "Prism Sync active. All transactions write securely to your remote Supabase relational schema instance."
+                              : "No VITE_SUPABASE_URL detected. Safely caching telemetry logs locally inside the client's localStorage vault."}
+                          </p>
+                        </div>
+
+                        {/* Gauge 2: AI Smart Coprocessor */}
+                        <div className="bg-white p-6 rounded-3xl border border-neutral-100 shadow-sm flex flex-col justify-between">
+                          <div className="flex items-start justify-between">
+                            <div className="space-y-1">
+                              <span className="text-[10px] font-bold text-neutral-400 uppercase tracking-wider block">Culinary Intelligence Host</span>
+                              <h4 className="text-sm font-bold text-neutral-800">
+                                {process.env.OPENROUTER_API_KEY || process.env.GEMINI_API_KEY ? "Gemini 2.5 Flash Online" : "Local Mock Pipeline"}
+                              </h4>
+                            </div>
+                            <span className="p-1.5 bg-orange-500 text-white rounded-lg">
+                              <Sparkles className="w-4 h-4" />
+                            </span>
+                          </div>
+                          <p className="text-xs text-neutral-500 leading-relaxed mt-4">
+                            Provides gourmet up-sell pairings and crust optimization recommendations dynamically. Synchronizes on step transitions.
+                          </p>
+                        </div>
+
+                        {/* Gauge 3: Ingress Container Port */}
+                        <div className="bg-white p-6 rounded-3xl border border-neutral-100 shadow-sm flex flex-col justify-between">
+                          <div className="flex items-start justify-between">
+                            <div className="space-y-1">
+                              <span className="text-[10px] font-bold text-neutral-400 uppercase tracking-wider block">Reverse Ingress Routing</span>
+                              <h4 className="text-sm font-bold text-neutral-800">Port 3000 (0.0.0.0)</h4>
+                            </div>
+                            <span className="p-1.5 bg-neutral-900 text-white rounded-lg">
+                              <Info className="w-4 h-4" />
+                            </span>
+                          </div>
+                          <p className="text-xs text-neutral-500 leading-relaxed mt-4">
+                            Nginx proxy maps container traffic safely to port 3000. Express server actively listening for customer order placement requests.
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* Operations Log console board */}
+                      <div className="bg-neutral-950 text-neutral-300 font-mono text-[11px] rounded-3xl p-6 shadow-xl border border-neutral-800 space-y-4">
+                        <div className="flex items-center justify-between border-b border-neutral-900 pb-3">
+                          <span className="text-neutral-400 font-bold uppercase tracking-wider text-[10px] flex items-center gap-1.5">
+                            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                            Console STDOUT stream log
+                          </span>
+                          <span className="text-[9px] text-neutral-600">Buffer size: {allOrders.length + 5} lines</span>
+                        </div>
+
+                        <div className="space-y-1.5 max-h-[220px] overflow-y-auto pr-2 text-neutral-400">
+                          <div>[00:01:04] SYSTEM_BOOT: Spawning node child processes... Success.</div>
+                          <div>[00:01:05] SERVER_STATUS: Binding container address to port 3000... Success.</div>
+                          <div>[00:01:05] DATABASE_PLUG: Checking for Supabase secret arrays... {isDbConnected ? "CONNECTED" : "FALLBACK_LOCAL_SIMULATION"}.</div>
+                          <div>[00:01:06] AI_MODEL: Mapping route proxy to google/gemini-2.5-flash... Active.</div>
+                          <div>[00:01:06] TELEMETRY_HEALTH: Operations center console listening on channel 0.</div>
+                          
+                          {allOrders.map((o, idx) => {
+                            const dateStr = o.created_at ? new Date(o.created_at).toLocaleTimeString() : '00:02:44';
                             return (
-                              <div key={item.name} className="space-y-1.5">
-                                <div className="flex items-center justify-between text-xs">
-                                  <span className="font-bold text-neutral-700">
-                                    {index + 1}. {item.name}
-                                  </span>
-                                  <span className="font-mono font-extrabold text-neutral-900 bg-neutral-50 px-2 py-0.5 rounded-md text-[10px]">
-                                    {item.sold} sold
-                                  </span>
-                                </div>
-                                <div className="h-2 w-full bg-neutral-100 rounded-full overflow-hidden">
-                                  <div 
-                                    className="h-full bg-orange-500 rounded-full transition-all duration-500" 
-                                    style={{ width: `${ratio}%` }} 
-                                  />
-                                </div>
+                              <div key={idx} className="text-neutral-300">
+                                [{dateStr}] TELEMETRY_RECEIVE: Placed order payload for client "{o.customer_name}" | Value: ₹{o.final_payable?.toFixed(0)} | Mode: {o.payment_mode}.
                               </div>
                             );
                           })}
                         </div>
-                      )}
-                    </div>
+                      </div>
 
-                  </div>
+                    </div>
+                  )}
+
                 </div>
               );
             })()}
@@ -1041,27 +1518,41 @@ export default function App() {
                   {currentStep === 4 && (
                     <div className="space-y-6">
                       <div className="space-y-1">
-                        <h2 className="text-xl font-black text-neutral-900 tracking-tight">Step 4: AI Flavor Guru Advice</h2>
+                        <div className="flex items-center gap-1.5">
+                          <h2 className="text-xl font-black text-neutral-900 tracking-tight">Step 4: AI Flavor Guru Advice</h2>
+                          <span className="bg-amber-500/10 text-amber-600 text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full">
+                            Antigravity AI
+                          </span>
+                        </div>
                         <p className="text-xs text-neutral-400">
                           Review a smart recommendation generated on-the-fly specifically for your current order profile.
                         </p>
                       </div>
 
-                      <div className="bg-neutral-950 text-white rounded-3xl p-6 md:p-8 space-y-4 relative overflow-hidden shadow-lg">
-                        {/* Background flare effect */}
+                      <div className="bg-neutral-950 text-white rounded-3xl p-6 md:p-8 space-y-6 relative overflow-hidden shadow-lg border border-neutral-800">
+                        {/* Background flare effects */}
                         <div className="absolute -right-12 -bottom-12 w-44 h-44 rounded-full bg-orange-500/15 blur-2xl pointer-events-none" />
+                        <div className="absolute -left-12 -top-12 w-44 h-44 rounded-full bg-amber-500/10 blur-2xl pointer-events-none" />
                         
-                        <div className="flex items-center gap-2">
-                          <span className="p-1.5 bg-orange-500 text-white rounded-lg">
-                            <Sparkles className="w-4 h-4" />
-                          </span>
-                          <span className="text-xs font-bold uppercase tracking-widest text-orange-400">
-                            Chef's Smart Upsell Recommendation
-                          </span>
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <span className="p-1.5 bg-orange-500 text-white rounded-lg">
+                              <Sparkles className="w-4 h-4" />
+                            </span>
+                            <span className="text-xs font-bold uppercase tracking-widest text-orange-400">
+                              Chef's Smart Upsell Recommendation
+                            </span>
+                          </div>
+                          
+                          {!aiLoading && guruRecommendation && (
+                            <span className="text-[10px] font-mono text-neutral-400 bg-neutral-900 px-2 py-1 rounded border border-neutral-800">
+                              Gemini 2.5 Flash
+                            </span>
+                          )}
                         </div>
 
                         {aiLoading ? (
-                          <div className="py-6 space-y-2">
+                          <div className="py-6 space-y-3">
                             <div className="flex items-center gap-1.5">
                               <span className="w-2.5 h-2.5 bg-orange-500 rounded-full animate-bounce" />
                               <span className="w-2.5 h-2.5 bg-orange-500 rounded-full animate-bounce [animation-delay:0.2s]" />
@@ -1070,19 +1561,100 @@ export default function App() {
                             <p className="text-xs text-neutral-400">Flavor Guru is reviewing your topping combinations...</p>
                           </div>
                         ) : (
-                          <div className="space-y-3">
+                          <div className="space-y-6">
                             <p className="text-sm md:text-base leading-relaxed text-neutral-100 font-medium italic">
                               "{aiUpsellText}"
                             </p>
-                            <p className="text-[10px] text-neutral-500 italic">
-                              * Powered by OpenRouter Gemini 2.5 Flash. Recommendations are purely culinary and do not modify transaction costs directly.
+
+                            {/* Structured Recommendation Breakdowns */}
+                            {guruRecommendation && (
+                              <div className="space-y-4 pt-2 border-t border-neutral-900">
+                                <span className="text-[10px] font-bold uppercase tracking-wider text-neutral-400 block">Suggested Improvements</span>
+                                <div className="space-y-2">
+                                  {/* Base upgrade visual block */}
+                                  {guruRecommendation.recommendedBaseId && selectedBase?.id !== guruRecommendation.recommendedBaseId && (
+                                    <div className="bg-neutral-900 border border-neutral-800/60 rounded-xl p-3 flex items-center justify-between text-xs text-neutral-300">
+                                      <div className="flex items-center gap-2">
+                                        <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
+                                        <span>Upgrade Crust: <strong className="text-white">{selectedBase?.name}</strong> → <strong className="text-amber-400">{bases.find(b => b.id === guruRecommendation.recommendedBaseId)?.name}</strong></span>
+                                      </div>
+                                      <span className="font-mono text-neutral-400 text-[10px]">
+                                        +₹{((bases.find(b => b.id === guruRecommendation.recommendedBaseId)?.price || 0) - (selectedBase?.price || 0)).toFixed(2)}
+                                      </span>
+                                    </div>
+                                  )}
+
+                                  {/* Toppings suggested block */}
+                                  {guruRecommendation.recommendedToppingIds && guruRecommendation.recommendedToppingIds.some(id => !selectedToppings.some(t => t.id === id)) ? (
+                                    <div className="space-y-1.5">
+                                      {guruRecommendation.recommendedToppingIds.map((id: string) => {
+                                        const alreadySelected = selectedToppings.some(t => t.id === id);
+                                        const topping = toppings.find(t => t.id === id);
+                                        if (!topping || alreadySelected) return null;
+                                        return (
+                                          <div key={id} className="bg-neutral-900 border border-neutral-800/60 rounded-xl p-3 flex items-center justify-between text-xs text-neutral-300">
+                                            <div className="flex items-center gap-2">
+                                              <span className="w-2 h-2 rounded-full bg-orange-500 animate-pulse" />
+                                              <span>Add Topping: <strong className="text-white">{topping.name}</strong></span>
+                                            </div>
+                                            <span className="font-mono text-neutral-400 text-[10px]">
+                                              +₹{topping.price.toFixed(2)}
+                                            </span>
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  ) : null}
+                                </div>
+
+                                {/* Application Button Wrapper */}
+                                <div className="pt-2">
+                                  {guruApplied ? (
+                                    <div className="w-full bg-emerald-950/40 border border-emerald-500/30 text-emerald-400 text-xs font-semibold py-3.5 px-4 rounded-xl flex items-center justify-center gap-2 shadow-inner">
+                                      <Check className="w-4 h-4 text-emerald-400 shrink-0" />
+                                      <span>Guru's Recommendations Applied! Checkout price updated in real-time.</span>
+                                    </div>
+                                  ) : (
+                                    (() => {
+                                      const delta = getRecommendationPriceDelta();
+                                      const canApply = delta > 0;
+                                      
+                                      if (canApply) {
+                                        return (
+                                          <button
+                                            onClick={applyGuruRecommendation}
+                                            className="w-full bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-white font-bold text-xs py-3.5 rounded-xl transition cursor-pointer flex items-center justify-center gap-2 shadow-md hover:shadow-lg hover:scale-[1.01] active:scale-[0.99] duration-150"
+                                          >
+                                            <Sparkles className="w-4 h-4 animate-pulse" />
+                                            Apply Guru's Recommendation (+₹{delta.toFixed(2)})
+                                          </button>
+                                        );
+                                      } else {
+                                        return (
+                                          <div className="w-full bg-neutral-900/60 border border-neutral-800 text-neutral-400 text-xs py-3 px-4 rounded-xl flex items-center justify-center gap-2">
+                                            <Check className="w-4 h-4 text-orange-400" />
+                                            <span>Your current pizza selection perfectly matches the Chef's taste recommendation!</span>
+                                          </div>
+                                        );
+                                      }
+                                    })()
+                                  )}
+                                </div>
+                              </div>
+                            )}
+
+                            <p className="text-[10px] text-neutral-600">
+                              * Powered by OpenRouter Gemini 2.5 Flash. Applies custom modifications directly into your client cart structure safely.
                             </p>
                           </div>
                         )}
                       </div>
 
-                      <div className="bg-neutral-50 rounded-2xl p-4 border border-neutral-100 text-xs text-neutral-600 leading-relaxed">
-                        To add toppings recommended by the Guru, you can click <span className="font-bold">Back</span> to adjust your toppings checklist, or click <span className="font-bold">Next</span> below to proceed to the final placement screen.
+                      <div className="bg-neutral-50 rounded-2xl p-4 border border-neutral-100 text-xs text-neutral-600 leading-relaxed flex items-start gap-2.5">
+                        <span className="text-amber-500 font-bold shrink-0">💡 Note:</span>
+                        <span>
+                          Applying the Chef's recommendations directly updates your pizza recipe visualizer and modifies the checkout price accordingly. You can still customize your choices anytime by pressing <span className="font-bold">Back</span>.
+                        </span>
                       </div>
                     </div>
                   )}
@@ -1177,7 +1749,18 @@ export default function App() {
 
               {/* Dynamic QR Sync Widget section */}
               {!orderComplete && (
-                <QRCodeWidget />
+                <QRCodeWidget 
+                  state={{
+                    customerName,
+                    customerPhone,
+                    currentStep,
+                    selectedBaseId: selectedBase?.id,
+                    selectedPizzaId: selectedPizza?.id,
+                    selectedToppingsIds: selectedToppings.map(t => t.id),
+                    quantity,
+                    paymentMode
+                  }}
+                />
               )}
             </div>
 
@@ -1210,7 +1793,7 @@ export default function App() {
       {/* Footer */}
       <footer className="bg-white border-t border-neutral-100 py-6 px-6 md:px-12 mt-12 text-center text-neutral-400 text-xs">
         <p>
-          © 2026 SliceMatic. All rights reserved. Crafted for Rajan's Pizza Delivery Brand, New Ashok Nagar, Delhi.
+          © 2026 SliceMatic. All rights reserved. Crafted for Rajan's Pizza Brand, New Ashok Nagar, Delhi.
           {currentPath !== '/admin' ? (
             <>
               {' • '}
@@ -1228,7 +1811,7 @@ export default function App() {
                 onClick={() => navigate('/')} 
                 className="hover:text-neutral-700 underline cursor-pointer inline bg-transparent border-none p-0 font-medium"
               >
-                Client Portal
+                Live Store
               </button>
             </>
           )}

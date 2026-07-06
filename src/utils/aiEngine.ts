@@ -9,7 +9,13 @@ export interface CartState {
   toppings: Array<{ id: string; name: string; price: number }>;
 }
 
-export async function fetchSmartUpsell(cart: CartState): Promise<string> {
+export interface GuruRecommendation {
+  explanation: string;
+  recommendedBaseId: string | null;
+  recommendedToppingIds: string[];
+}
+
+export async function fetchSmartUpsell(cart: CartState): Promise<GuruRecommendation> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => {
     controller.abort();
@@ -33,11 +39,19 @@ export async function fetchSmartUpsell(cart: CartState): Promise<string> {
     }
 
     const data = await response.json();
-    return data.recommendation || "Upgrade to our Cheese Burst base for a rich, gooey crust experience!";
+    return {
+      explanation: data.explanation || data.recommendation || "Upgrade to our Cheese Burst base for a rich, gooey crust experience!",
+      recommendedBaseId: data.recommendedBaseId || null,
+      recommendedToppingIds: data.recommendedToppingIds || []
+    };
   } catch (err: any) {
     clearTimeout(timeoutId);
     console.warn('[SliceMatic] AI Smart Upsell failed or timed out. Proceeding to checkout silently.', err);
     // Silent fallback to standard appetizing recommendation
-    return "Complete your masterpiece with an upgrade to Cheese Burst base or a sprinkle of extra toppings!";
+    return {
+      explanation: "Complete your masterpiece with an upgrade to Cheese Burst base or a sprinkle of extra toppings!",
+      recommendedBaseId: "B3",
+      recommendedToppingIds: ["T2"]
+    };
   }
 }

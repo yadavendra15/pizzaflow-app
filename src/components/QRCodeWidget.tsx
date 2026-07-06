@@ -3,20 +3,41 @@ import { useState, useEffect } from 'react';
 import { QrCode, Sparkles, X, Check } from 'lucide-react';
 
 interface QRCodeWidgetProps {
-  embeddedId?: string;
-  itemName?: string;
+  state?: {
+    customerName: string;
+    customerPhone: string;
+    currentStep: number;
+    selectedBaseId?: string;
+    selectedPizzaId?: string;
+    selectedToppingsIds?: string[];
+    quantity: number;
+    paymentMode: string;
+  };
 }
 
-export default function QRCodeWidget({ embeddedId, itemName }: QRCodeWidgetProps) {
+export default function QRCodeWidget({ state }: QRCodeWidgetProps) {
   const [currentUrl, setCurrentUrl] = useState('https://ai.studio/build');
   const [copied, setCopied] = useState(false);
   const [showModal, setShowModal] = useState(false);
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      setCurrentUrl(window.location.href);
+      const url = new URL(window.location.origin + window.location.pathname);
+      if (state) {
+        if (state.customerName) url.searchParams.set('name', encodeURIComponent(state.customerName));
+        if (state.customerPhone) url.searchParams.set('phone', encodeURIComponent(state.customerPhone));
+        if (state.currentStep) url.searchParams.set('step', String(state.currentStep));
+        if (state.selectedBaseId) url.searchParams.set('base', state.selectedBaseId);
+        if (state.selectedPizzaId) url.searchParams.set('pizza', state.selectedPizzaId);
+        if (state.selectedToppingsIds && state.selectedToppingsIds.length > 0) {
+          url.searchParams.set('toppings', state.selectedToppingsIds.join(','));
+        }
+        if (state.quantity) url.searchParams.set('qty', String(state.quantity));
+        if (state.paymentMode) url.searchParams.set('payment', state.paymentMode);
+      }
+      setCurrentUrl(url.toString());
     }
-  }, []);
+  }, [state]);
 
   const handleCopyLink = async () => {
     try {
