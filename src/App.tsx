@@ -76,8 +76,28 @@ export default function App() {
   const [placedOrderPayload, setPlacedOrderPayload] = useState<any>(null);
   const [submissionError, setSubmissionError] = useState<string>('');
 
-  // Admin View State
-  const [isAdminMode, setIsAdminMode] = useState(false);
+  // Router Routing State
+  const [currentPath, setCurrentPath] = useState(window.location.pathname);
+
+  // Synchronize browser history and popstate
+  useEffect(() => {
+    const handlePopState = () => {
+      setCurrentPath(window.location.pathname);
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  const navigate = (path: string) => {
+    window.history.pushState({}, '', path);
+    setCurrentPath(path);
+    // Auto-fetch if transitioning to admin and logged in
+    if (path === '/admin' && isAdminLoggedIn) {
+      fetchAdminOrders();
+    }
+  };
+
+  const isAdminMode = currentPath === '/admin';
   const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(false);
   const [adminEmail, setAdminEmail] = useState('');
   const [adminPassword, setAdminPassword] = useState('');
@@ -316,50 +336,61 @@ export default function App() {
       {/* Header */}
       <header className="bg-white border-b border-neutral-100 py-4 px-6 md:px-12 flex justify-between items-center sticky top-0 z-30 shadow-sm">
         <div className="flex items-center gap-3">
-          <div className="bg-orange-500 text-white p-2.5 rounded-2xl shadow-md shadow-orange-500/20">
+          <div className="bg-gradient-to-tr from-orange-500 to-amber-400 text-white p-2.5 rounded-2xl shadow-md shadow-orange-500/10 cursor-pointer hover:scale-105 active:scale-95 transition-transform duration-200" onClick={() => navigate('/')}>
             <PizzaIcon className="w-6 h-6 animate-spin-slow" />
           </div>
-          <div>
+          <div className="cursor-pointer flex flex-col items-start" onClick={() => navigate('/')}>
             <h1 className="text-xl font-black tracking-tight text-neutral-900">
-              SliceMatic
+              Slice<span className="text-orange-500">Matic</span>
             </h1>
-            <p className="text-[10px] text-neutral-400 font-bold uppercase tracking-wider">
-              Client Portal
-            </p>
+            <div className="mt-1">
+              {isAdminMode ? (
+                <span className="inline-flex items-center gap-1 text-[9px] bg-rose-50 text-rose-600 px-2.5 py-0.5 rounded-md font-extrabold tracking-wider uppercase border border-rose-100">
+                  <span className="w-1 h-1 rounded-full bg-rose-500 animate-pulse" /> Staff Panel
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 text-[9px] bg-orange-50 text-orange-600 px-2.5 py-0.5 rounded-md font-extrabold tracking-wider uppercase border border-orange-100/40">
+                  <span className="w-1 h-1 rounded-full bg-orange-500 animate-pulse" /> Live Store
+                </span>
+              )}
+            </div>
           </div>
         </div>
 
         <div className="flex items-center gap-3">
-          {/* Supabase status pill */}
-          <div className={`hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold ${
-            isDbConnected 
-              ? 'bg-emerald-50 text-emerald-700 border border-emerald-100' 
-              : 'bg-amber-50 text-amber-700 border border-amber-100'
-          }`}>
-            <Database className="w-3.5 h-3.5" />
-            {isDbConnected ? 'Supabase Live' : 'Local Simulation'}
-          </div>
-
-          <button
-            onClick={() => {
-              setIsAdminMode(!isAdminMode);
-              if (!isAdminMode) {
-                // reset state if leaving ordering flow
-                setAdminError('');
-              }
-            }}
-            className="flex items-center gap-1.5 text-xs font-bold bg-neutral-900 hover:bg-neutral-800 text-white px-4 py-2.5 rounded-xl transition cursor-pointer shadow-sm"
-          >
-            {isAdminMode ? (
+          {isAdminMode ? (
+            isAdminLoggedIn ? (
               <>
-                <PizzaIcon className="w-3.5 h-3.5" /> Pizza Order
+                <button
+                  onClick={fetchAdminOrders}
+                  disabled={ordersLoading}
+                  className="text-xs font-bold bg-white text-neutral-700 border border-neutral-200 hover:bg-neutral-50 px-4 py-2.5 rounded-xl transition cursor-pointer flex items-center gap-1.5 shadow-xs"
+                >
+                  <RotateCcw className={`w-3.5 h-3.5 ${ordersLoading ? 'animate-spin' : ''}`} /> Refresh Logs
+                </button>
+                <button
+                  onClick={handleAdminLogout}
+                  className="text-xs font-bold bg-red-50 text-red-600 border border-red-100 hover:bg-red-100 px-4 py-2.5 rounded-xl transition cursor-pointer flex items-center gap-1.5 shadow-xs"
+                >
+                  <LogOut className="w-3.5 h-3.5" /> Sign Out
+                </button>
               </>
             ) : (
-              <>
-                <ClipboardList className="w-3.5 h-3.5" /> Admin Panel
-              </>
-            )}
-          </button>
+              <button
+                onClick={() => navigate('/')}
+                className="text-xs font-bold bg-neutral-900 hover:bg-neutral-800 text-white px-4 py-2.5 rounded-xl transition cursor-pointer flex items-center gap-1.5 shadow-xs"
+              >
+                ← Back to Store
+              </button>
+            )
+          ) : (
+            <button
+              onClick={() => navigate('/admin')}
+              className="text-xs font-bold text-neutral-600 hover:text-neutral-900 border border-neutral-200 hover:border-neutral-300 hover:bg-neutral-50/50 px-4 py-2.5 rounded-xl transition cursor-pointer flex items-center gap-1.5 shadow-2xs"
+            >
+              <ClipboardList className="w-3.5 h-3.5" /> Staff Portal
+            </button>
+          )}
         </div>
       </header>
 
@@ -508,34 +539,6 @@ export default function App() {
 
               return (
                 <div className="flex-1 flex flex-col gap-6">
-                  {/* Admin Header */}
-                  <div className="bg-white rounded-3xl border border-neutral-100 shadow-sm p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                    <div className="space-y-1">
-                      <h2 className="text-xl font-black tracking-tight text-neutral-900 flex items-center gap-2">
-                        <ClipboardList className="w-5 h-5 text-orange-500" />
-                        SliceMatic Admin Portal
-                      </h2>
-                      <p className="text-xs text-neutral-400">
-                        Real-time metrics, bestseller analysis, and customer order histories
-                      </p>
-                    </div>
-
-                    <div className="flex items-center gap-3">
-                      <button
-                        onClick={fetchAdminOrders}
-                        className="text-xs font-bold bg-white text-neutral-700 border border-neutral-200 hover:bg-neutral-50 px-4 py-2.5 rounded-xl transition cursor-pointer flex items-center gap-1.5 shadow-sm"
-                      >
-                        <RotateCcw className="w-3.5 h-3.5" /> Refresh Logs
-                      </button>
-                      <button
-                        onClick={handleAdminLogout}
-                        className="text-xs font-bold bg-red-50 text-red-600 border border-red-100 hover:bg-red-100 px-4 py-2.5 rounded-xl transition cursor-pointer flex items-center gap-1.5 shadow-sm"
-                      >
-                        <LogOut className="w-3.5 h-3.5" /> Sign Out
-                      </button>
-                    </div>
-                  </div>
-
                   {/* Headline Statistics Cards */}
                   {!ordersLoading && allOrders.length > 0 && (
                     <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
@@ -1206,7 +1209,30 @@ export default function App() {
 
       {/* Footer */}
       <footer className="bg-white border-t border-neutral-100 py-6 px-6 md:px-12 mt-12 text-center text-neutral-400 text-xs">
-        <p>© 2026 SliceMatic. All rights reserved. Crafted for Rajan's Pizza Delivery Brand, New Ashok Nagar, Delhi.</p>
+        <p>
+          © 2026 SliceMatic. All rights reserved. Crafted for Rajan's Pizza Delivery Brand, New Ashok Nagar, Delhi.
+          {currentPath !== '/admin' ? (
+            <>
+              {' • '}
+              <button 
+                onClick={() => navigate('/admin')} 
+                className="hover:text-neutral-700 underline cursor-pointer inline bg-transparent border-none p-0 font-medium"
+              >
+                Staff Login
+              </button>
+            </>
+          ) : (
+            <>
+              {' • '}
+              <button 
+                onClick={() => navigate('/')} 
+                className="hover:text-neutral-700 underline cursor-pointer inline bg-transparent border-none p-0 font-medium"
+              >
+                Client Portal
+              </button>
+            </>
+          )}
+        </p>
       </footer>
     </div>
   );
