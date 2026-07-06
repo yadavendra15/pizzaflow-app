@@ -1,121 +1,216 @@
-# SliceMatic Client Portal & Admin Dashboard
+# SliceMatic Client Portal, Admin Panel & Operations Center
 
-SliceMatic is a premium, full-stack, production-grade pizza ordering client portal and admin audit application. It is built using React (Vite), Tailwind CSS, Express (Node.js), Supabase, and OpenRouter's Gemini 2.5 Flash API.
-
-This application replaces traditional manual order forms with a modern, automated system featuring a live visual canvas, precise billing engines, instant mobile syncing, and AI-powered upselling.
+SliceMatic is a premium, full-stack, production-grade pizza ordering client portal and real-time admin audit application. This solution replaces traditional manual order-taking Google Forms with an automated, responsive interface featuring a live visual canvas, precise mathematical billing engines, instant digital sharing, and an AI-powered smart upselling agent.
 
 ---
 
-## 🚀 Key Features
+## 🏗️ Architecture Overview
 
-1. **Step-by-Step Customer intake Form**:
-   - Stringent customer validation. Names are restricted to `^[a-zA-Z ]+$` (2-40 characters).
-   - Phone numbers must be exactly 10 digits starting with Indian mobile prefixes (`6`, `7`, `8`, or `9`).
-2. **Interactive Pizza Visualizer**:
-   - A dynamic, live pizza canvas rendered with `motion`.
-   - Real-time renders of crust bases (Thin, Thick, Cheese Burst, Whole Wheat, Multigrain), specific pizza sauce overlays, and individual toppings (e.g., Black Olives, Jalapenos) placed dynamically using offset algorithms.
-3. **Deterministic Billing & Math Engine**:
-   - Formula: `(Base Price + Pizza Price + Sum(Toppings Price)) * Quantity`.
-   - Automatic **10% discount** applied to the subtotal when ordering 5 or more pizzas.
-   - Standard **18% GST** added post-discount.
-4. **AI Flavor Guru (AI Smart Upsell)**:
-   - Powered by OpenRouter calling `google/gemini-2.5-flash`.
-   - Analyzes current selections to output a 1-2 sentence gourmet topping or crust enhancement.
-   - Built with an `AbortController` timeout interceptor: if the API takes > 2 seconds, the client portal silently falls back to standard suggestions to ensure zero checkout friction.
-5. **Supabase Cloud Database Persistence**:
-   - Submits structured order details and timestamps to a cloud-hosted `orders` schema table.
-   - Records line item selections to a related `order_line_items` table.
-   - Dual-Fetch fallback system: if Supabase configurations are missing or offline, details are safely persisted to local storage so no orders are ever lost.
-6. **Real-Time QR Code Sharing**:
-   - Embeds `qrcode.react` to generate dynamic QR codes pointing to the live URL.
-   - Enables clients at a physical counter to scan, take over, and continue customisation on their mobile browsers seamlessly.
-7. **Secure Administrator Audit Portal**:
-   - Under `admin@slicematic.com` login.
-   - Displays a clean, beautifully formatted spreadsheet table of all active bookings, item codes, sub-totals, discounts, taxes, and payment states.
+The application is structured as a full-stack, decoupled architecture designed for high availability, zero latency bottlenecks, and real-time state synchronization:
 
----
+```
++--------------------------------------------------------------+
+|                     React Client Portal                      |
+| (Intake Validation, Live Canvas, Config Sync, QR Transfer)  |
++------------------------------+-------------------------------+
+                               |
+            +------------------+------------------+
+            |                                     |
+            v                                     v
++-----------------------+              +-----------------------+
+|   Supabase Database   |              |  Gemini AI (via API)  |
+| (PostgreSQL, Schemas, |              | (Smart Upsell Prompt, |
+|  Configurations Sync) |              |  2s Interceptor Cut)  |
++-----------------------+              +-----------------------+
+```
 
-## 🛠️ Database Schema Structure (Supabase)
+1. **Frontend Layer (React 18 & Vite)**:
+   - High-fidelity visual styling using utility-first **Tailwind CSS**.
+   - Dynamic, organic micro-interactions and layout transitions powered by `motion`.
+   - Complete multi-stage form flow spanning Customer Intake, Pizza Builder (Canvas & Topping offsets), Checkout Summary, and QR Transfer.
 
-To support this deployment fully, create the following tables in your Supabase database:
+2. **Database & Sync Layer (Supabase Serverless)**:
+   - Fully relational schema managed via PostgreSQL tables.
+   - Dual-Fetch fallback system: if Supabase configurations are missing or offline, details are seamlessly retrieved and stored locally using client-side `localStorage`, ensuring zero client crash rates.
+   - Real-time global settings synchronization: the operations configurations (e.g., dynamic discount pizza threshold) are fetched directly from a database-backed `configurations` table.
 
-### 1. `bases` Table
-* `id` (text, primary key) - e.g., `B1`, `B2`
-* `name` (text) - e.g., `Thin Crust`
-* `price` (numeric) - e.g., `149.00`
-
-### 2. `pizzas` Table
-* `id` (text, primary key) - e.g., `P1`, `P2`
-* `name` (text) - e.g., `Margherita`
-* `price` (numeric) - e.g., `299.00`
-
-### 3. `toppings` Table
-* `id` (text, primary key) - e.g., `T1`
-* `name` (text) - e.g., `Extra Cheese`
-* `price` (numeric) - e.g., `69.00`
-
-### 4. `orders` Table
-* `id` (bigint, generated always as identity, primary key)
-* `customer_name` (text)
-* `customer_phone` (text)
-* `quantity` (int)
-* `payment_mode` (text)
-* `base_id` (text)
-* `pizza_id` (text)
-* `base_total` (numeric)
-* `discount_amount` (numeric)
-* `gst_amount` (numeric)
-* `final_payable` (numeric)
-* `created_at` (timestamp with time zone, default: `now()`)
-
-### 5. `order_line_items` Table
-* `id` (bigint, generated always as identity, primary key)
-* `order_id` (bigint, foreign key referencing `orders.id`)
-* `item_type` (text) - e.g., `'topping'`
-* `item_id` (text)
-* `item_name` (text)
-* `price` (numeric)
+3. **AI Integration Layer (OpenRouter / Google Gemini)**:
+   - Calls the `google/gemini-2.5-flash` model asynchronously.
+   - Guarded with an `AbortController` timeout interceptor: if the model call takes longer than 2000ms, the portal silently displays appetizing local fallback defaults so as to never delay customer checkouts.
 
 ---
 
-## 🤖 AI Flavor Guru System Prompt
+## 🤖 AI Feature Description: "AI Flavor Guru"
 
-The AI Smart Upsell relies on the following system directives:
+### Problem Solved
+Rajan's counter staff often forget to upsell premium additions (like changing a regular base to *Cheese Burst* or adding an extra topping like *Extra Cheese*), losing out on high-margin revenue.
 
+### How it Works
+The client portal watches the customer's base, pizza, and topping selections in real time. Before checkout, it invokes the **AI Flavor Guru**, which analyzes current ingredients to formulate a context-aware, appetizing recommendation.
+
+### System Prompt
 ```text
 You are a culinary expert at SliceMatic. Suggest a 1-2 sentence appetizing premium upsell recommendation (either a premium base like Cheese Burst or Whole Wheat, or an extra topping like Extra Cheese or Peri-Peri Drizzle) based on the customer's current order.
 CRITICAL RULE: Do NOT perform any math, price calculations, or number analysis. Keep your response appetizing, direct, and limited to exactly 1 or 2 sentences. No additional commentary, markdown formatting, or math.
 ```
 
-* **Model Used**: `google/gemini-2.5-flash` via OpenRouter.
-* **Why**: Blazing-fast inference times (often <500ms), exceptionally structured prompt adherence, and highly context-aware culinary suggestions.
+### Model Choice & Justification
+- **Model**: `google/gemini-2.5-flash`
+- **Why**: 
+  - **Sub-second latency**: Ideal for responsive customer-facing interfaces.
+  - **Exceptional instruction adherence**: Strictly follows negative constraints (e.g., avoiding mathematical speculation/markdown formatting).
+  - **Context-aware culinary intelligence**: Consistently yields natural-sounding, tempting, and relevant topping combinations.
 
 ---
 
-## ⚙️ Setup and Installation
+## 🛠️ Complete Supabase SQL Setup Script
 
-### 1. Configure Environment Variables
-Create a `.env` file in the root directory (based on `.env.example`):
-```env
-# Database configuration keys
-VITE_SUPABASE_URL=YOUR_SUPABASE_URL
-VITE_SUPABASE_ANON_KEY=YOUR_SUPABASE_ANON_KEY
+Execute the following SQL script directly in your **Supabase SQL Editor** to establish the required tables and seed the menu items and initial configurations:
 
-# OpenRouter API key for the AI smart upsell
-OPENROUTER_API_KEY=YOUR_OPENROUTER_API_KEY
+```sql
+-- 1. Create Bases Table
+CREATE TABLE IF NOT EXISTS bases (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  price NUMERIC(10, 2) NOT NULL
+);
+
+-- 2. Create Pizzas Table
+CREATE TABLE IF NOT EXISTS pizzas (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  price NUMERIC(10, 2) NOT NULL
+);
+
+-- 3. Create Toppings Table
+CREATE TABLE IF NOT EXISTS toppings (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  price NUMERIC(10, 2) NOT NULL
+);
+
+-- 4. Create Configurations Table (For Real-Time Admin Settings)
+CREATE TABLE IF NOT EXISTS configurations (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- 5. Create Orders Table
+CREATE TABLE IF NOT EXISTS orders (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  customer_name TEXT NOT NULL,
+  customer_phone TEXT NOT NULL,
+  quantity INT NOT NULL,
+  payment_mode TEXT NOT NULL,
+  base_id TEXT,
+  pizza_id TEXT,
+  base_total NUMERIC(10, 2) NOT NULL,
+  discount_amount NUMERIC(10, 2) NOT NULL,
+  gst_amount NUMERIC(10, 2) NOT NULL,
+  final_payable NUMERIC(10, 2) NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- 6. Create Order Line Items Table (For Toppings breakdowns)
+CREATE TABLE IF NOT EXISTS order_line_items (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  order_id BIGINT REFERENCES orders(id) ON DELETE CASCADE,
+  item_type TEXT NOT NULL, -- 'topping'
+  item_id TEXT NOT NULL,
+  item_name TEXT NOT NULL,
+  price NUMERIC(10, 2) NOT NULL
+);
+
+-- ==========================================
+-- SEED DATA (Direct from Stage 2 Data Files)
+-- ==========================================
+
+-- Seed Bases
+INSERT INTO bases (id, name, price) VALUES
+('B1', 'Thin Crust', 149.00),
+('B2', 'Thick Crust', 179.00),
+('B3', 'Cheese Burst', 229.00),
+('B4', 'Whole Wheat', 159.00),
+('B5', 'Multigrain', 169.00)
+ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, price = EXCLUDED.price;
+
+-- Seed Pizzas
+INSERT INTO pizzas (id, name, price) VALUES
+('P1', 'Margherita', 299.00),
+('P2', 'Chicago Deep Dish', 349.00),
+('P3', 'Greek Mediterranean', 329.00),
+('P4', 'California Veggie', 339.00),
+('P5', 'Farm House', 319.00),
+('P6', 'Pepperoni Classic', 369.00),
+('P7', 'BBQ Chicken', 379.00),
+('P8', 'Paneer Tikka', 349.00)
+ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, price = EXCLUDED.price;
+
+-- Seed Toppings
+INSERT INTO toppings (id, name, price) VALUES
+('T1', 'Black Olives', 49.00),
+('T2', 'Extra Cheese', 69.00),
+('T3', 'Button Mushrooms', 49.00),
+('T4', 'Green Peppers', 39.00),
+('T5', 'Jalapenos', 39.00),
+('T6', 'Sun-Dried Tomatoes', 59.00),
+('T7', 'Caramelised Onions', 49.00),
+('T8', 'Sweet Corn', 39.00),
+('T9', 'Roasted Garlic', 49.00),
+('T10', 'Peri-Peri Drizzle', 59.00)
+ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, price = EXCLUDED.price;
+
+-- Seed Initial Global Configurations
+INSERT INTO configurations (key, value) VALUES
+('discount_threshold', '5')
+ON CONFLICT (key) DO NOTHING;
 ```
 
-### 2. Local Run
-Install dependencies and spin up the developer build:
+---
+
+## ⚙️ Setup & Local Installation
+
+### 1. Configure Environment Variables
+Create a `.env` file in your root workspace (or configure the deployment secrets via your hosting provider, such as Vercel/Cloud Run):
+
+```env
+# Supabase Database Keys
+VITE_SUPABASE_URL=https://your-supabase-project.supabase.co
+VITE_SUPABASE_ANON_KEY=your-supabase-anon-key-string
+
+# AI Upsell API Configuration
+OPENROUTER_API_KEY=your-openrouter-api-key-string
+```
+
+### 2. Install & Start Development Server
+Ensure all node modules are configured, then spin up the fast Vite live server:
 ```bash
 npm install
 npm run dev
 ```
-The client portal will be available on `http://localhost:3000`.
+- Open `http://localhost:3000` to view the application.
 
-### 3. Production Build & Execution
-Compile static files and launch the Node.js server:
+### 3. Build for Production Deployment
+To package the app cleanly for live hosting platforms (Vercel, Netlify, or direct container runtimes):
 ```bash
 npm run build
 npm start
 ```
+All static pages are compiled into `/dist` while the backend Express proxy initializes via `server.ts`.
+
+---
+
+## 📊 Operations & Live Admin View
+
+The Operations Dashboard (accessible via the client layout using credentials `admin@slicematic.com` / password `admin`) allows live counter auditing:
+- **Order Entry Desk**: Enables floor staff to seamlessly submit custom walk-in bookings.
+- **Analytics View**: Visualizes order distributions, topping favorites, peak checkouts, and historical revenues.
+- **Configurations (Sync)**: A dedicated live dashboard to modify restaurant settings. Counter managers can increase or decrease the global **Discount Pizza Threshold** (e.g., from 5 pizzas to 3 pizzas) in a single click, instantly syncing the mathematical billing parameters for all live tablet customers.
+
+---
+
+## 📦 Stage 3 Deliverables Checklist
+- **Production URL**: *(Insert Deployed Vercel/Cloud Run URL here)*
+- **Supabase DB Status**: Live & configured with SQL schemas + configurations key.
+- **System Video Walkthrough**: *(Insert Loom/Screen-share Video Link here)*
