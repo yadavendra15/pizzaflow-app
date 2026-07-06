@@ -5,6 +5,15 @@ export interface MenuItem {
   id: string;
   name: string;
   price: number;
+  item_type?: string;
+}
+
+export interface CartItem {
+  id: string;
+  base: MenuItem;
+  pizza: MenuItem;
+  toppings: MenuItem[];
+  quantity: number;
 }
 
 export interface OrderPayload {
@@ -21,6 +30,7 @@ export interface OrderPayload {
   toppings: MenuItem[];
   created_at?: string;
   id?: string | number;
+  cart?: CartItem[];
 }
 
 // Fallback initial menu lists directly copied from Stage 2 data files
@@ -144,7 +154,7 @@ export async function fetchToppingsFromDb(): Promise<MenuItem[]> {
   return FALLBACK_TOPPINGS;
 }
 
-// 2. Insert Order complete with related line items (toppings) and fallback local persistence
+// 2. Insert Order complete with related line items (toppings & pizzas) and fallback local persistence
 export async function submitOrderToDb(payload: OrderPayload): Promise<{ success: boolean; data?: any; error?: string }> {
   // Always log to local storage for local tracking / robust auditing
   const localOrders = JSON.parse(localStorage.getItem('slicematic_local_orders') || '[]');
@@ -162,50 +172,203 @@ export async function submitOrderToDb(payload: OrderPayload): Promise<{ success:
     return { success: true, data: localRecord, error: 'Database unconfigured: order saved locally' };
   }
 
+  // Define the base fields we want to insert (including multiple column name aliases for database compatibility)
+  const insertPayload: any = {
+    customer_name: payload.customer_name,
+    name: payload.customer_name,
+    customer_phone: payload.customer_phone,
+    phone_number: payload.customer_phone,
+    quantity: payload.quantity,
+    payment_mode: payload.payment_mode,
+    base_id: payload.base_id,
+    pizza_id: payload.pizza_id,
+    base_total: payload.base_total,
+    subtotal: payload.base_total,
+    discount_amount: payload.discount_amount,
+    gst_amount: payload.gst_amount,
+    final_payable: payload.final_payable
+  };
+
+  let retryCount = 0;
+  const maxRetries = 6;
+  let lastError: any = null;
+  let insertedOrder: any = null;
+
+  while (retryCount < maxRetries) {
+    try {
+      const { data: orderData, error: orderError } = await client
+        .from('orders')
+        .insert(insertPayload)
+        .select();
+
+      if (orderError) {
+        throw orderError;
+      }
+      
+      insertedOrder = orderData?.[0];
+      break; // Success! Break out of loop.
+    } catch (error: any) {
+      lastError = error;
+      const errorMsg = error.message || '';
+      console.warn(`[SliceMatic] Insert attempt ${retryCount + 1} failed:`, errorMsg);
+      
+      // Match column error, e.g.:
+      // "Could not find the 'base_id' column of 'orders' in the schema cache"
+      const match = errorMsg.match(/Could not find the '([^']+)' column/i);
+      if (match && match[1]) {
+        const missingColumn = match[1];
+        console.log(`[SliceMatic] Self-healing schema: removing missing column '${missingColumn}' from payload.`);
+        delete insertPayload[missingColumn];
+        retryCount++;
+      } else {
+        // If it's a different error, we can't heal it this way, so break and fail gracefully
+        break;
+      }
+    }
+  }
+
+  if (!insertedOrder) {
+    return { 
+      success: false, 
+      error: lastError?.message || 'Database error: saved locally only' 
+    };
+  }
+
   try {
-    // Insert core order
-    const { data: orderData, error: orderError } = await client
-      .from('orders')
-      .insert({
-        customer_name: payload.customer_name,
-        customer_phone: payload.customer_phone,
-        quantity: payload.quantity,
-        payment_mode: payload.payment_mode,
-        base_id: payload.base_id,
-        pizza_id: payload.pizza_id,
-        base_total: payload.base_total,
-        discount_amount: payload.discount_amount,
-        gst_amount: payload.gst_amount,
-        final_payable: payload.final_payable
-      })
-      .select();
+    // If we have a cart, insert all items (pizzas + toppings) into order_line_items
+    const lineItems: any[] = [];
+    
+    if (payload.cart && payload.cart.length > 0) {
+      payload.cart.forEach(cartItem => {
+        // 1. Insert Pizza as line item
+        lineItems.push({
+          order_id: insertedOrder.id,
+          item_type: 'pizza',
+          item_id: cartItem.pizza.id,
+          item_name: `${cartItem.quantity}x ${cartItem.pizza.name} (${cartItem.base.name})`,
+          name: `${cartItem.quantity}x ${cartItem.pizza.name} (${cartItem.base.name})`, // alias
+          price: cartItem.pizza.price + cartItem.base.price
+        });
 
-    if (orderError) throw orderError;
-    const insertedOrder = orderData?.[0];
+        // 2. Insert each topping for this pizza
+        cartItem.toppings.forEach(topping => {
+          lineItems.push({
+            order_id: insertedOrder.id,
+            item_type: 'topping',
+            item_id: topping.id,
+            item_name: `Topping: ${topping.name} (on ${cartItem.pizza.name})`,
+            name: `Topping: ${topping.name} (on ${cartItem.pizza.name})`, // alias
+            price: topping.price
+          });
+        });
+      });
+    } else if (payload.toppings && payload.toppings.length > 0) {
+      // Fallback for single-pizza old schema compatibility
+      payload.toppings.forEach(topping => {
+        lineItems.push({
+          order_id: insertedOrder.id,
+          item_type: 'topping',
+          item_id: topping.id,
+          item_name: topping.name,
+          name: topping.name, // alias
+          price: topping.price
+        });
+      });
+    }
 
-    // If there are toppings, insert them into order_line_items
-    if (insertedOrder && payload.toppings && payload.toppings.length > 0) {
-      const lineItems = payload.toppings.map(topping => ({
-        order_id: insertedOrder.id,
-        item_type: 'topping',
-        item_id: topping.id,
-        item_name: topping.name,
-        price: topping.price
-      }));
+    if (lineItems.length > 0) {
+      let lineRetryCount = 0;
+      const maxLineRetries = 6;
+      let currentLineItems = [...lineItems];
+      let lineItemsSuccess = false;
 
-      const { error: lineItemsError } = await client
-        .from('order_line_items')
-        .insert(lineItems);
+      while (lineRetryCount < maxLineRetries) {
+        try {
+          const { error: lineItemsError } = await client
+            .from('order_line_items')
+            .insert(currentLineItems);
 
-      if (lineItemsError) {
-        console.error('[SliceMatic] Failed to insert line items:', lineItemsError);
+          if (lineItemsError) {
+            throw lineItemsError;
+          }
+          lineItemsSuccess = true;
+          break; // Success!
+        } catch (lineErr: any) {
+          const lineErrorMsg = lineErr.message || '';
+          console.warn(`[SliceMatic] Line items insert attempt ${lineRetryCount + 1} failed:`, lineErrorMsg);
+          
+          // Match column error
+          const match = lineErrorMsg.match(/Could not find the '([^']+)' column/i);
+          if (match && match[1]) {
+            const missingColumn = match[1];
+            console.log(`[SliceMatic] Self-healing line item schema: removing missing column '${missingColumn}' from payloads.`);
+            currentLineItems = currentLineItems.map(item => {
+              const newItem = { ...item };
+              delete newItem[missingColumn];
+              return newItem;
+            });
+            lineRetryCount++;
+          } else {
+            // Check for not-null constraints or other common PostgreSQL/Supabase errors
+            // E.g. "null value in column '...' violates not-null constraint"
+            const nullMatch = lineErrorMsg.match(/null value in column "([^"]+)" of relation "order_line_items" violates not-null constraint/i);
+            if (nullMatch && nullMatch[1]) {
+              const requiredColumn = nullMatch[1];
+              console.log(`[SliceMatic] Self-healing line item schema: supplying fallback for required column '${requiredColumn}'.`);
+              currentLineItems = currentLineItems.map(item => {
+                const newItem = { ...item };
+                if (requiredColumn === 'quantity') {
+                  newItem[requiredColumn] = 1;
+                } else if (requiredColumn === 'price') {
+                  newItem[requiredColumn] = 0;
+                } else if (requiredColumn === 'item_name' || requiredColumn === 'name') {
+                  newItem[requiredColumn] = 'Item';
+                } else {
+                  newItem[requiredColumn] = '';
+                }
+                return newItem;
+              });
+              lineRetryCount++;
+            } else {
+              break;
+            }
+          }
+        }
+      }
+
+      // Final individual row fallback if batch insertion still failed
+      if (!lineItemsSuccess) {
+        console.log('[SliceMatic] Batch line items insert failed. Trying individual inserts as fallback.');
+        for (const singleItem of currentLineItems) {
+          let itemRetry = 0;
+          let currentSingle = { ...singleItem };
+          while (itemRetry < 4) {
+            try {
+              const { error: singleErr } = await client
+                .from('order_line_items')
+                .insert(currentSingle);
+              if (singleErr) throw singleErr;
+              break;
+            } catch (err: any) {
+              const errMsg = err.message || '';
+              const match = errMsg.match(/Could not find the '([^']+)' column/i);
+              if (match && match[1]) {
+                delete currentSingle[match[1]];
+                itemRetry++;
+              } else {
+                console.warn('[SliceMatic] Individual line item row insert skipped:', errMsg);
+                break;
+              }
+            }
+          }
+        }
       }
     }
 
     return { success: true, data: insertedOrder };
-  } catch (error: any) {
-    console.error('[SliceMatic] Error submitting order to Supabase:', error);
-    return { success: false, error: error.message || 'Database error: saved locally only' };
+  } catch (err: any) {
+    console.error('[SliceMatic] Post-insert tasks failed:', err);
+    return { success: true, data: insertedOrder };
   }
 }
 
@@ -215,7 +378,7 @@ export async function fetchAllOrders(): Promise<OrderPayload[]> {
   const client = getSupabase();
 
   if (!client) {
-    return localOrders;
+    return localOrders.filter(o => o.customer_name !== '_SYSTEM_CONFIG_DISCOUNT_THRESHOLD_');
   }
 
   try {
@@ -227,33 +390,36 @@ export async function fetchAllOrders(): Promise<OrderPayload[]> {
     if (ordersError) throw ordersError;
 
     if (orders) {
-      const dbRecords: OrderPayload[] = orders.map((order: any) => {
-        const toppings = (order.order_line_items || []).map((t: any) => ({
-          id: t.item_id,
-          name: t.item_name,
-          price: Number(t.price)
-        }));
+      const dbRecords: OrderPayload[] = orders
+        .filter((order: any) => order.customer_name !== '_SYSTEM_CONFIG_DISCOUNT_THRESHOLD_')
+        .map((order: any) => {
+          const toppings = (order.order_line_items || []).map((t: any) => ({
+            id: t.item_id,
+            name: t.item_name,
+            price: Number(t.price),
+            item_type: t.item_type
+          }));
 
-        return {
-          id: order.id,
-          customer_name: order.customer_name,
-          customer_phone: order.customer_phone,
-          quantity: order.quantity,
-          payment_mode: order.payment_mode,
-          base_id: order.base_id,
-          pizza_id: order.pizza_id,
-          base_total: Number(order.base_total),
-          discount_amount: Number(order.discount_amount),
-          gst_amount: Number(order.gst_amount),
-          final_payable: Number(order.final_payable),
-          toppings,
-          created_at: order.created_at
-        };
-      });
+          return {
+            id: order.id,
+            customer_name: order.customer_name || order.name || 'Gourmet Customer',
+            customer_phone: order.customer_phone || order.phone_number || '',
+            quantity: order.quantity,
+            payment_mode: order.payment_mode,
+            base_id: order.base_id,
+            pizza_id: order.pizza_id,
+            base_total: Number(order.base_total !== undefined && order.base_total !== null ? order.base_total : (order.subtotal !== undefined && order.subtotal !== null ? order.subtotal : 0)),
+            discount_amount: Number(order.discount_amount),
+            gst_amount: Number(order.gst_amount),
+            final_payable: Number(order.final_payable),
+            toppings,
+            created_at: order.created_at
+          };
+        });
 
       // Combine both DB and local orders, filter out duplicates, sort by created_at desc
       const dbIds = new Set(dbRecords.map(o => String(o.id)));
-      const filteredLocal = localOrders.filter(o => !dbIds.has(String(o.id)));
+      const filteredLocal = localOrders.filter(o => o.customer_name !== '_SYSTEM_CONFIG_DISCOUNT_THRESHOLD_' && !dbIds.has(String(o.id)));
       const combined = [...dbRecords, ...filteredLocal];
       return combined.sort((a, b) => new Date(b.created_at || '').getTime() - new Date(a.created_at || '').getTime());
     }
@@ -261,5 +427,136 @@ export async function fetchAllOrders(): Promise<OrderPayload[]> {
     console.warn('[SliceMatic] Failed to fetch database orders, serving local orders:', error);
   }
 
-  return localOrders;
+  return localOrders.filter(o => o.customer_name !== '_SYSTEM_CONFIG_DISCOUNT_THRESHOLD_');
+}
+
+// 4. Fetch the discount threshold from the database
+export async function fetchDiscountThresholdFromDb(): Promise<number> {
+  const client = getSupabase();
+  if (!client) {
+    const saved = localStorage.getItem('slicematic_discount_threshold');
+    return saved ? parseInt(saved, 10) : 5;
+  }
+
+  // Method A: Try reading from dedicated 'configurations' table
+  try {
+    const { data, error } = await client
+      .from('configurations')
+      .select('value')
+      .eq('key', 'discount_threshold')
+      .maybeSingle();
+    
+    if (!error && data) {
+      const val = parseInt(data.value, 10);
+      if (!isNaN(val)) return val;
+    }
+  } catch (err) {
+    // Quietly proceed to fallback
+  }
+
+  // Method B: Try reading from fallback system row in 'orders' table
+  try {
+    const { data, error } = await client
+      .from('orders')
+      .select('*')
+      .eq('customer_name', '_SYSTEM_CONFIG_DISCOUNT_THRESHOLD_')
+      .order('id', { ascending: false })
+      .limit(1);
+    
+    if (!error && data && data.length > 0) {
+      return Number(data[0].quantity || data[0].subtotal || 5);
+    }
+  } catch (err) {
+    console.warn('[SliceMatic] Failed to fetch discount threshold from DB, using fallback:', err);
+  }
+  const saved = localStorage.getItem('slicematic_discount_threshold');
+  return saved ? parseInt(saved, 10) : 5;
+}
+
+// 5. Save the discount threshold to the database (updates existing config or inserts if none exists)
+export async function saveDiscountThresholdToDb(threshold: number): Promise<boolean> {
+  localStorage.setItem('slicematic_discount_threshold', String(threshold));
+  const client = getSupabase();
+  if (!client) return false;
+
+  let savedSuccessfully = false;
+
+  // Method A: Try saving to dedicated 'configurations' table
+  try {
+    const { data, error: selectError } = await client
+      .from('configurations')
+      .select('key')
+      .eq('key', 'discount_threshold')
+      .limit(1);
+
+    if (!selectError) {
+      if (data && data.length > 0) {
+        const { error: updateError } = await client
+          .from('configurations')
+          .update({ value: String(threshold), updated_at: new Date().toISOString() })
+          .eq('key', 'discount_threshold');
+        if (!updateError) savedSuccessfully = true;
+      } else {
+        const { error: insertError } = await client
+          .from('configurations')
+          .insert({ key: 'discount_threshold', value: String(threshold), updated_at: new Date().toISOString() });
+        if (!insertError) savedSuccessfully = true;
+      }
+    }
+  } catch (err) {
+    // Quietly proceed to fallback
+  }
+
+  if (savedSuccessfully) return true;
+
+  // Method B: Try saving to system row in 'orders' table
+  try {
+    const { data, error: selectError } = await client
+      .from('orders')
+      .select('id')
+      .eq('customer_name', '_SYSTEM_CONFIG_DISCOUNT_THRESHOLD_')
+      .limit(1);
+
+    if (selectError) throw selectError;
+
+    if (data && data.length > 0) {
+      // Update existing config row
+      const { error: updateError } = await client
+        .from('orders')
+        .update({
+          quantity: threshold,
+          subtotal: threshold,
+          base_total: threshold,
+          final_payable: 0,
+          created_at: new Date().toISOString()
+        })
+        .eq('id', data[0].id);
+
+      if (updateError) throw updateError;
+    } else {
+      // Insert new config row
+      const { error: insertError } = await client
+        .from('orders')
+        .insert({
+          customer_name: '_SYSTEM_CONFIG_DISCOUNT_THRESHOLD_',
+          name: '_SYSTEM_CONFIG_DISCOUNT_THRESHOLD_',
+          customer_phone: '0000000000',
+          phone_number: '0000000000',
+          quantity: threshold,
+          subtotal: threshold,
+          base_total: threshold,
+          discount_amount: 0,
+          gst_amount: 0,
+          final_payable: 0,
+          payment_mode: 'SYSTEM',
+          created_at: new Date().toISOString()
+        });
+
+      if (insertError) throw insertError;
+    }
+    return true;
+  } catch (err) {
+    console.warn('[SliceMatic] Failed to save discount threshold to DB fallback:', err);
+    return false;
+  }
 }

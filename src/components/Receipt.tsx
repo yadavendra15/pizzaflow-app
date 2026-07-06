@@ -1,14 +1,12 @@
-import { MenuItem } from '../utils/supabaseClient';
+import { MenuItem, CartItem } from '../utils/supabaseClient';
 import { ShoppingBag, Tag, ReceiptText, ShieldAlert } from 'lucide-react';
 
 interface ReceiptProps {
   customerName: string;
   customerPhone: string;
-  base: MenuItem | null;
-  pizza: MenuItem | null;
-  toppings: MenuItem[];
-  quantity: number;
+  cart: CartItem[];
   paymentMode: string;
+  discountThreshold: number;
   isSubmitting?: boolean;
   isComplete?: boolean;
 }
@@ -16,25 +14,23 @@ interface ReceiptProps {
 export default function Receipt({
   customerName,
   customerPhone,
-  base,
-  pizza,
-  toppings,
-  quantity,
+  cart = [],
   paymentMode,
+  discountThreshold = 5,
   isSubmitting = false,
   isComplete = false
 }: ReceiptProps) {
   
   // Math Engine
-  const basePrice = base?.price || 0;
-  const pizzaPrice = pizza?.price || 0;
-  const toppingsPrice = toppings.reduce((sum, t) => sum + t.price, 0);
+  const subtotal = cart.reduce((sum, item) => {
+    const itemUnitRate = item.base.price + item.pizza.price + item.toppings.reduce((tsum, t) => tsum + t.price, 0);
+    return sum + (itemUnitRate * item.quantity);
+  }, 0);
+
+  const totalQuantity = cart.reduce((sum, item) => sum + item.quantity, 0);
   
-  const unitPrice = basePrice + pizzaPrice + toppingsPrice;
-  const subtotal = unitPrice * quantity;
-  
-  // Apply 10% discount if Quantity >= 5
-  const isDiscountEligible = quantity >= 5;
+  // Apply 10% discount if total quantity >= discountThreshold
+  const isDiscountEligible = totalQuantity >= discountThreshold && totalQuantity > 0;
   const discountAmount = isDiscountEligible ? subtotal * 0.10 : 0;
   
   const postDiscountSubtotal = subtotal - discountAmount;
@@ -84,53 +80,44 @@ export default function Receipt({
       {/* Itemised Bill */}
       <div className="py-4 border-b border-dashed border-neutral-200 flex-1 space-y-3">
         <span className="text-[10px] text-neutral-400 font-bold tracking-widest uppercase block font-mono">
-          Itemised Details (per unit)
+          Itemised Cart Details
         </span>
 
-        {base || pizza || toppings.length > 0 ? (
-          <div className="space-y-2.5 font-mono text-xs">
-            {/* Base Crust */}
-            {base && (
-              <div className="flex justify-between items-start text-neutral-700">
-                <span className="max-w-[180px]">Crust ({base.name})</span>
-                <span className="shrink-0 font-semibold">₹{base.price.toFixed(2)}</span>
-              </div>
-            )}
-
-            {/* Pizza Recipe */}
-            {pizza && (
-              <div className="flex justify-between items-start text-neutral-700">
-                <span className="max-w-[180px]">Style ({pizza.name})</span>
-                <span className="shrink-0 font-semibold">₹{pizza.price.toFixed(2)}</span>
-              </div>
-            )}
-
-            {/* Toppings Sublist */}
-            {toppings.length > 0 && (
-              <div className="space-y-1.5 pl-3 border-l-2 border-neutral-100">
-                <div className="text-[10px] text-neutral-400 uppercase font-bold">Toppings:</div>
-                {toppings.map((topping) => (
-                  <div key={topping.id} className="flex justify-between text-neutral-600 text-[11px]">
-                    <span className="truncate max-w-[160px]">+ {topping.name}</span>
-                    <span className="shrink-0">₹{topping.price.toFixed(2)}</span>
+        {cart && cart.length > 0 ? (
+          <div className="space-y-4 font-mono text-xs">
+            {cart.map((item, idx) => {
+              const itemUnitRate = item.base.price + item.pizza.price + item.toppings.reduce((tsum, t) => tsum + t.price, 0);
+              const itemTotal = itemUnitRate * item.quantity;
+              return (
+                <div key={item.id || idx} className="border-b border-neutral-100/40 pb-3 last:border-none last:pb-0">
+                  <div className="flex justify-between items-start text-neutral-800 font-bold">
+                    <span className="max-w-[200px]">{item.pizza.name} × {item.quantity}</span>
+                    <span className="shrink-0 font-mono">₹{itemTotal.toFixed(2)}</span>
                   </div>
-                ))}
-              </div>
-            )}
+                  <div className="text-[10px] text-neutral-400 mt-0.5">
+                    Crust: {item.base.name} (Unit: ₹{itemUnitRate.toFixed(2)})
+                  </div>
+                  {item.toppings.length > 0 && (
+                    <div className="space-y-0.5 pl-2.5 mt-1 border-l border-neutral-200 text-neutral-500 text-[10px]">
+                      {item.toppings.map((topping) => (
+                        <div key={topping.id} className="flex justify-between">
+                          <span>+ {topping.name}</span>
+                          <span>₹{(topping.price * item.quantity).toFixed(2)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
 
-            {/* Single Unit Summation */}
-            <div className="pt-2 border-t border-dashed border-neutral-100 flex justify-between text-neutral-500 text-[11px]">
-              <span>Unit Rate</span>
-              <span>₹{unitPrice.toFixed(2)}</span>
-            </div>
-
-            {/* Quantity multiplier */}
-            <div className="flex justify-between text-neutral-700 font-bold bg-neutral-50 p-2 rounded-lg">
+            {/* Total Quantity badge */}
+            <div className="flex justify-between text-neutral-700 font-bold bg-neutral-50 p-2 rounded-lg mt-2">
               <span className="flex items-center gap-1">
                 <ShoppingBag className="w-3.5 h-3.5 text-neutral-500" />
-                Quantity
+                Total Pizza Count
               </span>
-              <span>× {quantity}</span>
+              <span>× {totalQuantity}</span>
             </div>
           </div>
         ) : (
@@ -141,14 +128,14 @@ export default function Receipt({
       </div>
 
       {/* Bill summary and calculations */}
-      {base && pizza ? (
+      {cart && cart.length > 0 ? (
         <div className="pt-4 space-y-2.5 font-mono text-xs">
           <div className="flex justify-between text-neutral-600">
             <span>Subtotal:</span>
             <span>₹{subtotal.toFixed(2)}</span>
           </div>
 
-          {/* Automatic 10% Discount HUD line */}
+          {/* Automatic Multi-Pizza Discount HUD line */}
           {isDiscountEligible ? (
             <div className="flex justify-between text-emerald-600 font-semibold bg-emerald-50 px-2 py-1.5 rounded-lg border border-dashed border-emerald-200">
               <span className="flex items-center gap-1">
@@ -157,9 +144,9 @@ export default function Receipt({
               </span>
               <span>- ₹{discountAmount.toFixed(2)}</span>
             </div>
-          ) : quantity > 1 && (
+          ) : totalQuantity > 0 && (
             <div className="text-[10px] text-neutral-400 italic text-right flex items-center justify-end gap-1">
-              <ShieldAlert className="w-3 h-3" /> Add {5 - quantity} more pizzas for 10% discount!
+              <ShieldAlert className="w-3 h-3 text-amber-500" /> Add {discountThreshold - totalQuantity} more pizzas for 10% discount!
             </div>
           )}
 
@@ -182,10 +169,10 @@ export default function Receipt({
       ) : (
         <div className="pt-4 text-center border-t border-dashed border-neutral-150 py-3">
           <p className="text-[10px] text-neutral-400 font-semibold uppercase tracking-wider font-mono">
-            Awaiting Pizza Selection
+            Awaiting Cart Selections
           </p>
           <p className="text-[10px] text-neutral-400 mt-1">
-            Calculations will update once crust & recipe are configured in Step 2.
+            Configure pizzas in Step 2 and add them to your cart.
           </p>
         </div>
       )}

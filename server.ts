@@ -34,9 +34,18 @@ async function startServer() {
 
       // Safe fallback recommendations based on pizza style
       const getFallbackRecommendation = () => {
-        const hasExtraCheese = cart.toppings?.some((t: any) => t.id === 'T2');
-        const hasPeriPeri = cart.toppings?.some((t: any) => t.id === 'T10');
-        const isThinCrust = cart.base?.id === 'B1';
+        const primaryItem = Array.isArray(cart) ? cart[0] : cart;
+        if (!primaryItem) {
+          return {
+            explanation: "Complete your pizza masterpiece with a premium Cheese Burst base and Extra Cheese!",
+            recommendedBaseId: "B3",
+            recommendedToppingIds: ["T2"]
+          };
+        }
+        const toppingsList = primaryItem.toppings || [];
+        const hasExtraCheese = toppingsList.some((t: any) => t.id === 'T2');
+        const hasPeriPeri = toppingsList.some((t: any) => t.id === 'T10');
+        const isThinCrust = primaryItem.base?.id === 'B1';
 
         if (isThinCrust) {
           return {
@@ -94,6 +103,21 @@ Rules:
 - Keep the explanation highly appetizing, friendly, and limited to exactly 1 or 2 sentences (under 25 words).
 - If they already have a premium base (B3, B4, B5), set recommendedBaseId to null.`;
 
+      let formattedSelections = "";
+      if (Array.isArray(cart)) {
+        if (cart.length === 0) {
+          formattedSelections = "None (empty cart)";
+        } else {
+          formattedSelections = cart.map((item: any, idx: number) => {
+            return `Pizza ${idx + 1}: ${item.quantity || 1}x ${item.pizza?.name || 'Pizza'} (Base: ${item.base?.name || 'Thin'}, Toppings: ${item.toppings?.map((t: any) => t.name).join(', ') || 'None'})`;
+          }).join('\n');
+        }
+      } else if (cart) {
+        formattedSelections = `Base: ${cart.base?.name || 'None'} (ID: ${cart.base?.id || 'None'}), Pizza: ${cart.pizza?.name || 'None'} (ID: ${cart.pizza?.id || 'None'}), Toppings: ${cart.toppings?.map((t: any) => `${t.name} (${t.id})`).join(', ') || 'None'}`;
+      } else {
+        formattedSelections = "None";
+      }
+
       const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
         method: 'POST',
         headers: {
@@ -108,7 +132,7 @@ Rules:
             { role: 'system', content: systemPrompt },
             {
               role: 'user',
-              content: `The customer has selected: Base: ${cart.base?.name || 'None'} (ID: ${cart.base?.id || 'None'}), Pizza: ${cart.pizza?.name || 'None'} (ID: ${cart.pizza?.id || 'None'}), Toppings: ${cart.toppings?.map((t: any) => `${t.name} (${t.id})`).join(', ') || 'None'}. Suggest a single specific premium base or extra topping to add.`
+              content: `The customer has selected the following items in their order:\n${formattedSelections}\n\nSuggest a single premium base upgrade (B3, B4, B5) or extra toppings pairing that perfectly matches these items as a general up-sell recommendation.`
             }
           ]
         })

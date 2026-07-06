@@ -12,6 +12,7 @@ interface QRCodeWidgetProps {
     selectedToppingsIds?: string[];
     quantity: number;
     paymentMode: string;
+    cart?: any[];
   };
 }
 
@@ -22,20 +23,46 @@ export default function QRCodeWidget({ state }: QRCodeWidgetProps) {
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      const url = new URL(window.location.origin + window.location.pathname);
-      if (state) {
-        if (state.customerName) url.searchParams.set('name', encodeURIComponent(state.customerName));
-        if (state.customerPhone) url.searchParams.set('phone', encodeURIComponent(state.customerPhone));
-        if (state.currentStep) url.searchParams.set('step', String(state.currentStep));
-        if (state.selectedBaseId) url.searchParams.set('base', state.selectedBaseId);
-        if (state.selectedPizzaId) url.searchParams.set('pizza', state.selectedPizzaId);
-        if (state.selectedToppingsIds && state.selectedToppingsIds.length > 0) {
-          url.searchParams.set('toppings', state.selectedToppingsIds.join(','));
+      try {
+        const url = new URL(window.location.href);
+        
+        // Purge any stale URL state params before building the new ones
+        url.searchParams.delete('name');
+        url.searchParams.delete('phone');
+        url.searchParams.delete('step');
+        url.searchParams.delete('base');
+        url.searchParams.delete('pizza');
+        url.searchParams.delete('toppings');
+        url.searchParams.delete('qty');
+        url.searchParams.delete('payment');
+        url.searchParams.delete('cart');
+
+        if (state) {
+          if (state.customerName) url.searchParams.set('name', encodeURIComponent(state.customerName));
+          if (state.customerPhone) url.searchParams.set('phone', encodeURIComponent(state.customerPhone));
+          if (state.currentStep) url.searchParams.set('step', String(state.currentStep));
+          if (state.selectedBaseId) url.searchParams.set('base', state.selectedBaseId);
+          if (state.selectedPizzaId) url.searchParams.set('pizza', state.selectedPizzaId);
+          if (state.selectedToppingsIds && state.selectedToppingsIds.length > 0) {
+            url.searchParams.set('toppings', state.selectedToppingsIds.join(','));
+          }
+          if (state.quantity) url.searchParams.set('qty', String(state.quantity));
+          if (state.paymentMode) url.searchParams.set('payment', state.paymentMode);
+          
+          if (state.cart && state.cart.length > 0) {
+            const minifiedCart = state.cart.map(item => ({
+              b: item.base.id,
+              p: item.pizza.id,
+              t: item.toppings.map((tp: any) => tp.id),
+              q: item.quantity
+            }));
+            url.searchParams.set('cart', encodeURIComponent(JSON.stringify(minifiedCart)));
+          }
         }
-        if (state.quantity) url.searchParams.set('qty', String(state.quantity));
-        if (state.paymentMode) url.searchParams.set('payment', state.paymentMode);
+        setCurrentUrl(url.toString());
+      } catch (e) {
+        console.warn('[SliceMatic] Failed to construct sharing state URL', e);
       }
-      setCurrentUrl(url.toString());
     }
   }, [state]);
 
