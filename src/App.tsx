@@ -7,7 +7,9 @@ import {
   fetchAllOrders,
   isSupabaseConfigured,
   MenuItem,
-  OrderPayload
+  OrderPayload,
+  FALLBACK_BASES,
+  FALLBACK_PIZZAS
 } from './utils/supabaseClient';
 import { fetchSmartUpsell } from './utils/aiEngine';
 import PizzaVisualizer from './components/PizzaVisualizer';
@@ -29,7 +31,12 @@ import {
   ClipboardList, 
   ArrowRight,
   LogOut,
-  Info
+  Info,
+  TrendingUp,
+  ShoppingBag,
+  Search,
+  Percent,
+  Tag
 } from 'lucide-react';
 
 export default function App() {
@@ -77,6 +84,7 @@ export default function App() {
   const [adminError, setAdminError] = useState('');
   const [allOrders, setAllOrders] = useState<OrderPayload[]>([]);
   const [ordersLoading, setOrdersLoading] = useState(false);
+  const [adminSearchQuery, setAdminSearchQuery] = useState('');
 
   // Initial load
   useEffect(() => {
@@ -428,121 +436,317 @@ export default function App() {
                   </button>
                 </form>
               </div>
-            ) : (
-              <div className="bg-white rounded-3xl border border-neutral-100 shadow-sm overflow-hidden flex-1 flex flex-col">
-                {/* Admin Header */}
-                <div className="border-b border-neutral-100 p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-neutral-50/50">
-                  <div className="space-y-1">
-                    <h2 className="text-lg font-black tracking-tight text-neutral-900">
-                      SliceMatic Orders Audit
-                    </h2>
-                    <p className="text-xs text-neutral-400">
-                      Real-time log of customer bookings from Supabase & offline storage
-                    </p>
+            ) : (() => {
+              // Helper lookups
+              const getBaseName = (baseId: string) => {
+                const b = bases.find(item => item.id === baseId);
+                return b ? b.name : (FALLBACK_BASES.find(item => item.id === baseId)?.name || baseId);
+              };
+
+              const getPizzaName = (pizzaId: string) => {
+                const p = pizzas.find(item => item.id === pizzaId);
+                return p ? p.name : (FALLBACK_PIZZAS.find(item => item.id === pizzaId)?.name || pizzaId);
+              };
+
+              // Shreya's Today's stats calculation
+              const getTodayStats = () => {
+                const today = allOrders.filter((o) => {
+                  if (!o.created_at) return false;
+                  const d = new Date(o.created_at);
+                  const ref = new Date();
+                  return (
+                    d.getFullYear() === ref.getFullYear() &&
+                    d.getMonth() === ref.getMonth() &&
+                    d.getDate() === ref.getDate()
+                  );
+                });
+
+                return {
+                  orderCount: today.length,
+                  revenue: today.reduce((sum, o) => sum + (o.final_payable || 0), 0),
+                  gstCollected: today.reduce((sum, o) => sum + (o.gst_amount || 0), 0),
+                  discountGiven: today.reduce((sum, o) => sum + (o.discount_amount || 0), 0),
+                  pizzasSold: today.reduce((sum, o) => sum + (o.quantity || 0), 0),
+                };
+              };
+
+              // Shreya's Weekly Bestsellers (7 days) calculation
+              const getWeeklyBestSellers = () => {
+                const weekAgo = new Date();
+                weekAgo.setDate(weekAgo.getDate() - 7);
+
+                const counts = new Map<string, number>();
+                for (const order of allOrders) {
+                  if (!order.created_at) continue;
+                  if (new Date(order.created_at) < weekAgo) continue;
+                  
+                  const pizzaName = getPizzaName(order.pizza_id);
+                  counts.set(pizzaName, (counts.get(pizzaName) ?? 0) + (order.quantity || 0));
+                }
+
+                return Array.from(counts.entries())
+                  .map(([name, sold]) => ({ name, sold }))
+                  .sort((a, b) => b.sold - a.sold);
+              };
+
+              const stats = getTodayStats();
+              const bestSellers = getWeeklyBestSellers();
+              const maxBestSellerSold = bestSellers.length > 0 ? bestSellers[0].sold : 1;
+
+              // Filter orders based on search query
+              const filteredOrders = allOrders.filter(o => {
+                const query = adminSearchQuery.toLowerCase();
+                if (!query) return true;
+                return (
+                  o.customer_name.toLowerCase().includes(query) ||
+                  o.customer_phone.includes(query) ||
+                  getBaseName(o.base_id).toLowerCase().includes(query) ||
+                  getPizzaName(o.pizza_id).toLowerCase().includes(query) ||
+                  (o.id && String(o.id).includes(query))
+                );
+              });
+
+              return (
+                <div className="flex-1 flex flex-col gap-6">
+                  {/* Admin Header */}
+                  <div className="bg-white rounded-3xl border border-neutral-100 shadow-sm p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                    <div className="space-y-1">
+                      <h2 className="text-xl font-black tracking-tight text-neutral-900 flex items-center gap-2">
+                        <ClipboardList className="w-5 h-5 text-orange-500" />
+                        SliceMatic Admin Portal
+                      </h2>
+                      <p className="text-xs text-neutral-400">
+                        Real-time metrics, bestseller analysis, and customer order histories
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-3">
+                      <button
+                        onClick={fetchAdminOrders}
+                        className="text-xs font-bold bg-white text-neutral-700 border border-neutral-200 hover:bg-neutral-50 px-4 py-2.5 rounded-xl transition cursor-pointer flex items-center gap-1.5 shadow-sm"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5" /> Refresh Logs
+                      </button>
+                      <button
+                        onClick={handleAdminLogout}
+                        className="text-xs font-bold bg-red-50 text-red-600 border border-red-100 hover:bg-red-100 px-4 py-2.5 rounded-xl transition cursor-pointer flex items-center gap-1.5 shadow-sm"
+                      >
+                        <LogOut className="w-3.5 h-3.5" /> Sign Out
+                      </button>
+                    </div>
                   </div>
 
-                  <div className="flex items-center gap-3">
-                    <button
-                      onClick={fetchAdminOrders}
-                      className="text-xs font-bold bg-white text-neutral-700 border border-neutral-200 hover:bg-neutral-50 px-4 py-2.5 rounded-xl transition cursor-pointer flex items-center gap-1.5"
-                    >
-                      <RotateCcw className="w-3.5 h-3.5" /> Refresh Logs
-                    </button>
-                    <button
-                      onClick={handleAdminLogout}
-                      className="text-xs font-bold bg-red-50 text-red-600 border border-red-100 hover:bg-red-100 px-4 py-2.5 rounded-xl transition cursor-pointer flex items-center gap-1.5"
-                    >
-                      <LogOut className="w-3.5 h-3.5" /> Sign Out
-                    </button>
-                  </div>
-                </div>
+                  {/* Headline Statistics Cards */}
+                  {!ordersLoading && allOrders.length > 0 && (
+                    <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+                      {/* Stat Card: Today's Orders */}
+                      <div className="bg-white p-5 rounded-2xl border-l-4 border-l-orange-500 border border-neutral-100 shadow-sm flex flex-col justify-between">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[10px] font-bold text-neutral-400 uppercase tracking-wider">Today's Orders</span>
+                          <ShoppingBag className="w-4 h-4 text-orange-500" />
+                        </div>
+                        <div className="mt-2">
+                          <span className="text-2xl font-black text-neutral-900">{stats.orderCount}</span>
+                        </div>
+                      </div>
 
-                {/* Audit Table */}
-                <div className="flex-1 overflow-x-auto">
-                  {ordersLoading ? (
-                    <div className="py-24 text-center space-y-3">
-                      <div className="inline-block w-8 h-8 border-4 border-neutral-200 border-t-neutral-950 rounded-full animate-spin" />
-                      <p className="text-xs text-neutral-400">Synchronising database orders log...</p>
+                      {/* Stat Card: Pizzas Sold */}
+                      <div className="bg-white p-5 rounded-2xl border-l-4 border-l-red-500 border border-neutral-100 shadow-sm flex flex-col justify-between">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[10px] font-bold text-neutral-400 uppercase tracking-wider">Pizzas Sold</span>
+                          <PizzaIcon className="w-4 h-4 text-red-500" />
+                        </div>
+                        <div className="mt-2">
+                          <span className="text-2xl font-black text-neutral-900">{stats.pizzasSold}</span>
+                        </div>
+                      </div>
+
+                      {/* Stat Card: Today's Revenue */}
+                      <div className="bg-white p-5 rounded-2xl border-l-4 border-l-emerald-500 border border-neutral-100 shadow-sm flex flex-col justify-between">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[10px] font-bold text-neutral-400 uppercase tracking-wider">Revenue</span>
+                          <TrendingUp className="w-4 h-4 text-emerald-500" />
+                        </div>
+                        <div className="mt-2">
+                          <span className="text-2xl font-black text-emerald-600">₹{stats.revenue.toFixed(2)}</span>
+                        </div>
+                      </div>
+
+                      {/* Stat Card: GST Collected */}
+                      <div className="bg-white p-5 rounded-2xl border-l-4 border-l-neutral-700 border border-neutral-100 shadow-sm flex flex-col justify-between">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[10px] font-bold text-neutral-400 uppercase tracking-wider">GST (18%)</span>
+                          <Percent className="w-4 h-4 text-neutral-600" />
+                        </div>
+                        <div className="mt-2">
+                          <span className="text-2xl font-black text-neutral-800">₹{stats.gstCollected.toFixed(2)}</span>
+                        </div>
+                      </div>
+
+                      {/* Stat Card: Discounts Given */}
+                      <div className="bg-white p-5 rounded-2xl border-l-4 border-l-purple-500 border border-neutral-100 shadow-sm flex flex-col justify-between">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[10px] font-bold text-neutral-400 uppercase tracking-wider">Discounts</span>
+                          <Tag className="w-4 h-4 text-purple-500" />
+                        </div>
+                        <div className="mt-2">
+                          <span className="text-2xl font-black text-purple-600">₹{stats.discountGiven.toFixed(2)}</span>
+                        </div>
+                      </div>
                     </div>
-                  ) : allOrders.length === 0 ? (
-                    <div className="py-24 text-center space-y-2">
-                      <p className="text-sm font-bold text-neutral-600">No Orders Available</p>
-                      <p className="text-xs text-neutral-400">Complete an order from the client portal to display statistics here.</p>
-                    </div>
-                  ) : (
-                    <table className="w-full text-left border-collapse">
-                      <thead>
-                        <tr className="bg-neutral-50 text-neutral-400 text-[10px] uppercase font-bold tracking-wider border-b border-neutral-100">
-                          <th className="py-4 px-6">Timestamp</th>
-                          <th className="py-4 px-6">Customer</th>
-                          <th className="py-4 px-6">Phone</th>
-                          <th className="py-4 px-6">Items (Code)</th>
-                          <th className="py-4 px-6 text-center">Qty</th>
-                          <th className="py-4 px-6 text-right">Subtotal</th>
-                          <th className="py-4 px-6 text-right">Discount</th>
-                          <th className="py-4 px-6 text-right">GST (18%)</th>
-                          <th className="py-4 px-6 text-right font-bold text-neutral-800">Final Total</th>
-                          <th className="py-4 px-6 text-center">Payment</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-neutral-50 text-xs font-mono">
-                        {allOrders.map((order, idx) => {
-                          const baseCode = order.base_id || 'B1';
-                          const pizzaCode = order.pizza_id || 'P1';
-                          
-                          return (
-                            <tr key={order.id || idx} className="hover:bg-neutral-50/50 transition">
-                              <td className="py-4.5 px-6 text-neutral-500 whitespace-nowrap">
-                                {order.created_at ? new Date(order.created_at).toLocaleString() : 'Just Now'}
-                              </td>
-                              <td className="py-4.5 px-6 font-bold text-neutral-800 uppercase max-w-[150px] truncate">
-                                {order.customer_name}
-                              </td>
-                              <td className="py-4.5 px-6 text-neutral-600">
-                                +91 {order.customer_phone}
-                              </td>
-                              <td className="py-4.5 px-6 text-neutral-700 font-sans max-w-[200px] truncate">
-                                <div>Crust: <span className="font-semibold text-[11px] font-mono">{baseCode}</span></div>
-                                <div>Pizza: <span className="font-semibold text-[11px] font-mono">{pizzaCode}</span></div>
-                                {order.toppings && order.toppings.length > 0 && (
-                                  <div className="text-[10px] text-neutral-400 truncate">
-                                    + {order.toppings.map(t => t.id).join(', ')}
-                                  </div>
-                                )}
-                              </td>
-                              <td className="py-4.5 px-6 text-center font-bold text-neutral-800">
-                                {order.quantity}
-                              </td>
-                              <td className="py-4.5 px-6 text-right text-neutral-600">
-                                ₹{order.base_total?.toFixed(2)}
-                              </td>
-                              <td className="py-4.5 px-6 text-right text-emerald-600">
-                                {order.discount_amount && order.discount_amount > 0 ? `-₹${order.discount_amount.toFixed(2)}` : '—'}
-                              </td>
-                              <td className="py-4.5 px-6 text-right text-neutral-500">
-                                ₹{order.gst_amount?.toFixed(2)}
-                              </td>
-                              <td className="py-4.5 px-6 text-right font-extrabold text-neutral-900 bg-neutral-50/20">
-                                ₹{order.final_payable?.toFixed(2)}
-                              </td>
-                              <td className="py-4.5 px-6 text-center">
-                                <span className={`inline-block px-2.5 py-1 rounded-full text-[10px] uppercase font-bold tracking-wider ${
-                                  order.payment_mode === 'Cash' ? 'bg-amber-100 text-amber-800 border border-amber-200' :
-                                  order.payment_mode === 'Card' ? 'bg-indigo-100 text-indigo-800 border border-indigo-200' :
-                                  'bg-emerald-100 text-emerald-800 border border-emerald-200'
-                                }`}>
-                                  {order.payment_mode}
-                                </span>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
                   )}
+
+                  {/* Main Grid: Orders Table & Best Sellers Chart */}
+                  <div className="flex flex-col lg:flex-row gap-6 items-start w-full">
+                    
+                    {/* Left: Orders Table Panel */}
+                    <div className="w-full lg:w-8/12 bg-white rounded-3xl border border-neutral-100 shadow-sm overflow-hidden flex flex-col">
+                      <div className="p-6 border-b border-neutral-100 flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-neutral-50/20">
+                        <div>
+                          <h3 className="text-sm font-bold text-neutral-800">All Orders Log</h3>
+                          <p className="text-xs text-neutral-400">Total: {filteredOrders.length} orders found</p>
+                        </div>
+                        
+                        {/* Search Input */}
+                        <div className="relative w-full sm:w-64">
+                          <Search className="w-4 h-4 text-neutral-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                          <input
+                            type="text"
+                            placeholder="Search name, phone, crust..."
+                            value={adminSearchQuery}
+                            onChange={(e) => setAdminSearchQuery(e.target.value)}
+                            className="w-full pl-10 pr-4 py-2 border border-neutral-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-neutral-900/5 focus:border-neutral-900 transition"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="overflow-x-auto">
+                        {ordersLoading ? (
+                          <div className="py-24 text-center space-y-3">
+                            <div className="inline-block w-8 h-8 border-4 border-neutral-200 border-t-neutral-950 rounded-full animate-spin" />
+                            <p className="text-xs text-neutral-400">Synchronising database orders log...</p>
+                          </div>
+                        ) : filteredOrders.length === 0 ? (
+                          <div className="py-24 text-center space-y-2">
+                            <p className="text-sm font-bold text-neutral-600">No Orders Match</p>
+                            <p className="text-xs text-neutral-400">Try modifying your search or place a new order.</p>
+                          </div>
+                        ) : (
+                          <table className="w-full text-left border-collapse">
+                            <thead>
+                              <tr className="bg-neutral-50 text-neutral-400 text-[10px] uppercase font-bold tracking-wider border-b border-neutral-100">
+                                <th className="py-4 px-6">ID</th>
+                                <th className="py-4 px-6">Timestamp</th>
+                                <th className="py-4 px-6">Customer</th>
+                                <th className="py-4 px-6">Phone</th>
+                                <th className="py-4 px-6">Pizza Details</th>
+                                <th className="py-4 px-6 text-center">Qty</th>
+                                <th className="py-4 px-6 text-right">Discount</th>
+                                <th className="py-4 px-6 text-right">GST</th>
+                                <th className="py-4 px-6 text-right font-bold text-neutral-800">Total</th>
+                                <th className="py-4 px-6 text-center">Payment</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-neutral-50 text-xs font-mono">
+                              {filteredOrders.map((order, idx) => {
+                                const baseName = getBaseName(order.base_id);
+                                const pizzaName = getPizzaName(order.pizza_id);
+                                
+                                return (
+                                  <tr key={order.id || idx} className="hover:bg-neutral-50/30 transition">
+                                    <td className="py-4 px-6 text-neutral-400 font-bold whitespace-nowrap">
+                                      #{order.id ? String(order.id).slice(-4) : idx + 1}
+                                    </td>
+                                    <td className="py-4 px-6 text-neutral-500 whitespace-nowrap">
+                                      {order.created_at ? new Date(order.created_at).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }) : 'Just Now'}
+                                    </td>
+                                    <td className="py-4 px-6 font-bold text-neutral-800 uppercase max-w-[150px] truncate">
+                                      {order.customer_name}
+                                    </td>
+                                    <td className="py-4 px-6 text-neutral-600">
+                                      +91 {order.customer_phone}
+                                    </td>
+                                    <td className="py-4 px-6 text-neutral-700 font-sans max-w-[240px] leading-relaxed">
+                                      <div className="font-bold text-neutral-900">{pizzaName}</div>
+                                      <div className="text-[11px] text-neutral-500 font-medium">Crust: {baseName}</div>
+                                      {order.toppings && order.toppings.length > 0 && (
+                                        <div className="text-[10px] text-neutral-400 font-medium mt-0.5">
+                                          + {order.toppings.map(t => t.name).join(', ')}
+                                        </div>
+                                      )}
+                                    </td>
+                                    <td className="py-4 px-6 text-center font-bold text-neutral-800">
+                                      {order.quantity}
+                                    </td>
+                                    <td className="py-4 px-6 text-right text-emerald-600">
+                                      {order.discount_amount && order.discount_amount > 0 ? `-₹${order.discount_amount.toFixed(2)}` : '—'}
+                                    </td>
+                                    <td className="py-4 px-6 text-right text-neutral-500">
+                                      ₹{order.gst_amount?.toFixed(2)}
+                                    </td>
+                                    <td className="py-4 px-6 text-right font-extrabold text-neutral-900 bg-neutral-50/10">
+                                      ₹{order.final_payable?.toFixed(2)}
+                                    </td>
+                                    <td className="py-4 px-6 text-center">
+                                      <span className={`inline-block px-2.5 py-1 rounded-full text-[10px] uppercase font-bold tracking-wider ${
+                                        order.payment_mode === 'Cash' ? 'bg-amber-100 text-amber-800 border border-amber-200' :
+                                        order.payment_mode === 'Card' ? 'bg-indigo-100 text-indigo-800 border border-indigo-200' :
+                                        'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                                      }`}>
+                                        {order.payment_mode}
+                                      </span>
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Right: Best Sellers (7 Days) Panel */}
+                    <div className="w-full lg:w-4/12 bg-white rounded-3xl border border-neutral-100 shadow-sm p-6 flex flex-col">
+                      <div className="mb-6">
+                        <h3 className="text-sm font-bold text-neutral-800">Best Sellers (7 Days)</h3>
+                        <p className="text-xs text-neutral-400">Recipe performance ranking by quantity</p>
+                      </div>
+
+                      {ordersLoading ? (
+                        <div className="py-12 text-center text-xs text-neutral-400 animate-pulse">Calculating sales volume...</div>
+                      ) : bestSellers.length === 0 ? (
+                        <p className="text-xs text-neutral-400 italic">No pizza sales recorded in the last 7 days.</p>
+                      ) : (
+                        <div className="space-y-4">
+                          {bestSellers.map((item, index) => {
+                            const ratio = Math.min(100, Math.max(5, (item.sold / maxBestSellerSold) * 100));
+                            return (
+                              <div key={item.name} className="space-y-1.5">
+                                <div className="flex items-center justify-between text-xs">
+                                  <span className="font-bold text-neutral-700">
+                                    {index + 1}. {item.name}
+                                  </span>
+                                  <span className="font-mono font-extrabold text-neutral-900 bg-neutral-50 px-2 py-0.5 rounded-md text-[10px]">
+                                    {item.sold} sold
+                                  </span>
+                                </div>
+                                <div className="h-2 w-full bg-neutral-100 rounded-full overflow-hidden">
+                                  <div 
+                                    className="h-full bg-orange-500 rounded-full transition-all duration-500" 
+                                    style={{ width: `${ratio}%` }} 
+                                  />
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+
+                  </div>
                 </div>
-              </div>
-            )}
+              );
+            })()}
           </div>
         ) : (
           /* ----------------- CLIENT ORDERING PORTAL VIEW ----------------- */
