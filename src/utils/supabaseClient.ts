@@ -155,6 +155,24 @@ export async function fetchToppingsFromDb(): Promise<MenuItem[]> {
   return FALLBACK_TOPPINGS;
 }
 
+let lineItemsTableCached: 'order_line_items' | 'order_items' | null = null;
+
+export async function getLineItemsTableName(client: any): Promise<'order_line_items' | 'order_items'> {
+  if (lineItemsTableCached) return lineItemsTableCached;
+  try {
+    const { error } = await client.from('order_line_items').select('id').limit(1);
+    if (error && (error.code === 'PGRST205' || error.message?.includes('order_line_items') || error.message?.includes('relation "order_line_items" does not exist'))) {
+      lineItemsTableCached = 'order_items';
+    } else {
+      lineItemsTableCached = 'order_line_items';
+    }
+  } catch (e) {
+    lineItemsTableCached = 'order_items';
+  }
+  console.log(`[SliceMatic] Detected line items table name: ${lineItemsTableCached}`);
+  return lineItemsTableCached;
+}
+
 // 2. Insert Order complete with related line items (toppings & pizzas) and fallback local persistence
 export async function submitOrderToDb(payload: OrderPayload): Promise<{ success: boolean; data?: any; error?: string }> {
   // Always log to local storage for local tracking / robust auditing
@@ -284,11 +302,12 @@ export async function submitOrderToDb(payload: OrderPayload): Promise<{ success:
       const maxLineRetries = 6;
       let currentLineItems = [...lineItems];
       let lineItemsSuccess = false;
+      const tableName = await getLineItemsTableName(client);
 
       while (lineRetryCount < maxLineRetries) {
         try {
           const { error: lineItemsError } = await client
-            .from('order_line_items')
+            .from(tableName)
             .insert(currentLineItems);
 
           if (lineItemsError) {
@@ -314,7 +333,7 @@ export async function submitOrderToDb(payload: OrderPayload): Promise<{ success:
           } else {
             // Check for not-null constraints or other common PostgreSQL/Supabase errors
             // E.g. "null value in column '...' violates not-null constraint"
-            const nullMatch = lineErrorMsg.match(/null value in column "([^"]+)" of relation "order_line_items" violates not-null constraint/i);
+            const nullMatch = lineErrorMsg.match(new RegExp(`null value in column "([^"]+)" of relation "(${tableName})" violates not-null constraint`, 'i'));
             if (nullMatch && nullMatch[1]) {
               const requiredColumn = nullMatch[1];
               console.log(`[SliceMatic] Self-healing line item schema: supplying fallback for required column '${requiredColumn}'.`);
@@ -348,7 +367,7 @@ export async function submitOrderToDb(payload: OrderPayload): Promise<{ success:
           while (itemRetry < 4) {
             try {
               const { error: singleErr } = await client
-                .from('order_line_items')
+                .from(tableName)
                 .insert(currentSingle);
               if (singleErr) throw singleErr;
               break;
@@ -385,22 +404,55 @@ export async function fetchAllOrders(): Promise<OrderPayload[]> {
   }
 
   try {
-    // Fetch orders
+    // Fetch orders first (without foreign key join request)
     const { data: orders, error: ordersError } = await client
       .from('orders')
-      .select('*, order_line_items(*)');
+      .select('*');
 
     if (ordersError) throw ordersError;
 
+    let allLineItems: any[] = [];
+    if (orders && orders.length > 0) {
+      try {
+        const orderIds = orders.map((o: any) => o.id);
+        // Fetch matching line items from detected table
+        const tableName = await getLineItemsTableName(client);
+        const { data: lineItems, error: lineItemsError } = await client
+          .from(tableName)
+          .select('*')
+          .in('order_id', orderIds);
+
+        if (!lineItemsError && lineItems) {
+          allLineItems = lineItems;
+        } else {
+          console.warn('[SliceMatic] Could not fetch line items separately:', lineItemsError);
+        }
+      } catch (e) {
+        console.warn('[SliceMatic] Error fetching order line items separately:', e);
+      }
+    }
+
     if (orders) {
+      // Map line items by their parent order_id
+      const lineItemsByOrderId: Record<string, any[]> = {};
+      allLineItems.forEach((item: any) => {
+        if (item.order_id) {
+          if (!lineItemsByOrderId[item.order_id]) {
+            lineItemsByOrderId[item.order_id] = [];
+          }
+          lineItemsByOrderId[item.order_id].push(item);
+        }
+      });
+
       const dbRecords: OrderPayload[] = orders
         .filter((order: any) => order.customer_name !== '_SYSTEM_CONFIG_DISCOUNT_THRESHOLD_')
         .map((order: any) => {
-          const toppings = (order.order_line_items || []).map((t: any) => ({
-            id: t.item_id,
-            name: t.item_name,
-            price: Number(t.price),
-            item_type: t.item_type
+          const items = lineItemsByOrderId[order.id] || [];
+          const toppings = items.map((t: any) => ({
+            id: t.item_id || t.id,
+            name: t.item_name || t.name || 'Item',
+            price: Number(t.price || 0),
+            item_type: t.item_type || 'unknown'
           }));
 
           return {
@@ -421,11 +473,8 @@ export async function fetchAllOrders(): Promise<OrderPayload[]> {
           };
         });
 
-      // Combine both DB and local orders, filter out duplicates, sort by created_at desc
-      const dbIds = new Set(dbRecords.map(o => String(o.id)));
-      const filteredLocal = localOrders.filter(o => o.customer_name !== '_SYSTEM_CONFIG_DISCOUNT_THRESHOLD_' && !dbIds.has(String(o.id)));
-      const combined = [...dbRecords, ...filteredLocal];
-      return combined.sort((a, b) => new Date(b.created_at || '').getTime() - new Date(a.created_at || '').getTime());
+      // Rely strictly on Supabase database records when configured and successfully fetched
+      return dbRecords.sort((a, b) => new Date(b.created_at || '').getTime() - new Date(a.created_at || '').getTime());
     }
   } catch (error) {
     console.warn('[SliceMatic] Failed to fetch database orders, serving local orders:', error);
