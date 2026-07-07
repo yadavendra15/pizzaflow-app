@@ -118,113 +118,132 @@ Rules:
 
       let parsed: any = null;
 
-      // Check if OpenRouter key is configured
+      // 1. Try OpenRouter First
       if (openRouterKey && openRouterKey !== "MY_OPENROUTER_API_KEY" && openRouterKey.trim() !== "") {
-        console.log('[SliceMatic] Calling OpenRouter API with OPENROUTER_API_KEY...');
-        const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${openRouterKey}`,
-            'HTTP-Referer': 'https://ai.studio/build',
-            'X-Title': 'SliceMatic Client Portal',
-          },
-          body: JSON.stringify({
-            model: 'google/gemini-2.5-flash',
-            response_format: { type: 'json_object' },
-            messages: [
-              {
-                role: 'system',
-                content: `${systemPrompt}\n\nYou MUST respond ONLY with a valid JSON object in this exact format:
+        try {
+          console.log('[SliceMatic] Calling OpenRouter API with OPENROUTER_API_KEY...');
+          const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${openRouterKey}`,
+              'HTTP-Referer': 'https://ai.studio/build',
+              'X-Title': 'SliceMatic Client Portal',
+            },
+            body: JSON.stringify({
+              model: 'google/gemini-2.5-flash',
+              response_format: { type: 'json_object' },
+              messages: [
+                {
+                  role: 'system',
+                  content: `${systemPrompt}\n\nYou MUST respond ONLY with a valid JSON object in this exact format:
 {
   "explanation": "A warm, 1-2 sentence appetizing description of your gourmet recommendation.",
   "recommendedBaseId": "B3" or null,
   "recommendedToppingIds": ["T1", "T2"] or []
 }`
-              },
-              {
-                role: 'user',
-                content: `The customer has selected the following items in their order:\n${formattedSelections}\n\nSuggest a single premium base upgrade or extra toppings pairing that perfectly matches these items as a general up-sell recommendation.`
-              }
-            ]
-          })
-        });
-
-        if (!response.ok) {
-          throw new Error(`OpenRouter API responded with status ${response.status}`);
-        }
-
-        const data: any = await response.json();
-        let content = data.choices?.[0]?.message?.content?.trim() || "";
-
-        // Strip markdown code block backticks if present
-        if (content.startsWith("```json")) {
-          content = content.substring(7);
-        } else if (content.startsWith("```")) {
-          content = content.substring(3);
-        }
-        if (content.endsWith("```")) {
-          content = content.substring(0, content.length - 3);
-        }
-        content = content.trim();
-        parsed = JSON.parse(content);
-      } 
-      // Fallback to Google GenAI SDK if GEMINI_API_KEY is configured
-      else if (geminiKey && geminiKey !== "MY_GEMINI_API_KEY" && geminiKey.trim() !== "") {
-        console.log('[SliceMatic] Calling Google GenAI SDK with GEMINI_API_KEY...');
-        const aiClient = new GoogleGenAI({
-          apiKey: geminiKey,
-          httpOptions: {
-            headers: {
-              'User-Agent': 'aistudio-build',
-            }
-          }
-        });
-
-        const response = await aiClient.models.generateContent({
-          model: 'gemini-3.5-flash',
-          contents: `The customer has selected the following items in their order:\n${formattedSelections}\n\nSuggest a single premium base upgrade (B3, B4, B5) or extra toppings pairing that perfectly matches these items as a general up-sell recommendation.`,
-          config: {
-            systemInstruction: systemPrompt,
-            responseMimeType: 'application/json',
-            responseSchema: {
-              type: Type.OBJECT,
-              properties: {
-                explanation: {
-                  type: Type.STRING,
-                  description: "A warm, 1-2 sentence appetizing description of your gourmet recommendation."
                 },
-                recommendedBaseId: {
-                  type: Type.STRING,
-                  description: "The ID of the recommended base crust to upgrade to, or null if no upgrade is recommended."
-                },
-                recommendedToppingIds: {
-                  type: Type.ARRAY,
-                  items: { type: Type.STRING },
-                  description: "A list of 1 or 2 recommended topping IDs that pair perfectly with their pizza."
+                {
+                  role: 'user',
+                  content: `The customer has selected the following items in their order:\n${formattedSelections}\n\nSuggest a single premium base upgrade or extra toppings pairing that perfectly matches these items as a general up-sell recommendation.`
                 }
-              },
-              required: ["explanation", "recommendedBaseId", "recommendedToppingIds"]
+              ]
+            })
+          });
+
+          if (!response.ok) {
+            throw new Error(`OpenRouter API responded with status ${response.status}`);
+          }
+
+          const data: any = await response.json();
+          
+          // Guard against rate limiting / SSE error injected in streams
+          if (data.choices?.[0]?.finish_reason === "error") {
+            const errDetail = data.choices[0].error || {};
+            throw new Error(`OpenRouter stream returned an error: ${errDetail.message || 'unknown error'}`);
+          }
+
+          let content = data.choices?.[0]?.message?.content?.trim() || "";
+
+          // Strip markdown code block backticks if present
+          if (content.startsWith("```json")) {
+            content = content.substring(7);
+          } else if (content.startsWith("```")) {
+            content = content.substring(3);
+          }
+          if (content.endsWith("```")) {
+            content = content.substring(0, content.length - 3);
+          }
+          content = content.trim();
+          parsed = JSON.parse(content);
+          console.log('[SliceMatic] OpenRouter API completed successfully.');
+        } catch (orErr: any) {
+          console.warn('[SliceMatic] OpenRouter call failed or returned rate limits, falling back to Gemini SDK. Error:', orErr.message || orErr);
+        }
+      }
+
+      // 2. Try Gemini (Google GenAI SDK) if OpenRouter didn't work or wasn't configured
+      if (!parsed && geminiKey && geminiKey !== "MY_GEMINI_API_KEY" && geminiKey.trim() !== "") {
+        try {
+          console.log('[SliceMatic] Calling Google GenAI SDK with GEMINI_API_KEY...');
+          const aiClient = new GoogleGenAI({
+            apiKey: geminiKey,
+            httpOptions: {
+              headers: {
+                'User-Agent': 'aistudio-build',
+              }
+            }
+          });
+
+          const response = await aiClient.models.generateContent({
+            model: 'gemini-3.5-flash',
+            contents: `The customer has selected the following items in their order:\n${formattedSelections}\n\nSuggest a single premium base upgrade (B3, B4, B5) or extra toppings pairing that perfectly matches these items as a general up-sell recommendation.`,
+            config: {
+              systemInstruction: systemPrompt,
+              responseMimeType: 'application/json',
+              responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                  explanation: {
+                    type: Type.STRING,
+                    description: "A warm, 1-2 sentence appetizing description of your gourmet recommendation."
+                  },
+                  recommendedBaseId: {
+                    type: Type.STRING,
+                    description: "The ID of the recommended base crust to upgrade to, or null if no upgrade is recommended."
+                  },
+                  recommendedToppingIds: {
+                    type: Type.ARRAY,
+                    items: { type: Type.STRING },
+                    description: "A list of 1 or 2 recommended topping IDs that pair perfectly with their pizza."
+                  }
+                },
+                required: ["explanation", "recommendedBaseId", "recommendedToppingIds"]
+              }
+            }
+          });
+
+          let content = response.text || "";
+          try {
+            parsed = JSON.parse(content);
+          } catch (parseErr) {
+            console.warn('[SliceMatic] Failed to parse JSON from Google GenAI SDK, using fallback extraction');
+            const jsonMatch = content.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+              parsed = JSON.parse(jsonMatch[0]);
+            } else {
+              throw parseErr;
             }
           }
-        });
-
-        let content = response.text || "";
-        try {
-          parsed = JSON.parse(content);
-        } catch (parseErr) {
-          console.warn('[SliceMatic] Failed to parse JSON from Google GenAI SDK, using fallback extraction');
-          const jsonMatch = content.match(/\{[\s\S]*\}/);
-          if (jsonMatch) {
-            parsed = JSON.parse(jsonMatch[0]);
-          } else {
-            throw parseErr;
-          }
+          console.log('[SliceMatic] Google GenAI SDK completed successfully.');
+        } catch (geminiErr: any) {
+          console.warn('[SliceMatic] Gemini SDK call failed, falling back to local recommendation. Error:', geminiErr.message || geminiErr);
         }
-      } 
-      // Local fallback recommendation if no key is configured
-      else {
-        console.warn('[SliceMatic] No valid API keys found in env, triggering high-fidelity local fallback.');
+      }
+
+      // 3. High-fidelity local fallback recommendation if both APIs failed or weren't configured
+      if (!parsed) {
+        console.warn('[SliceMatic] Using high-fidelity local fallback recommendation.');
         parsed = getFallbackRecommendation();
       }
 
