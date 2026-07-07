@@ -12,12 +12,14 @@ import {
   OrderPayload,
   CartItem,
   FALLBACK_BASES,
-  FALLBACK_PIZZAS
+  FALLBACK_PIZZAS,
+  updateOrderStatusInDb
 } from './utils/supabaseClient';
 import { fetchSmartUpsell } from './utils/aiEngine';
 import PizzaVisualizer from './components/PizzaVisualizer';
 import Receipt from './components/Receipt';
 import QRCodeWidget from './components/QRCodeWidget';
+import { QRCodeSVG } from 'qrcode.react';
 import { 
   User, 
   Phone, 
@@ -41,7 +43,10 @@ import {
   Percent,
   Tag,
   Trash2,
-  Settings
+  Settings,
+  Printer,
+  X,
+  QrCode
 } from 'lucide-react';
 
 export default function App() {
@@ -54,6 +59,16 @@ export default function App() {
   const [pizzas, setPizzas] = useState<MenuItem[]>([]);
   const [toppings, setToppings] = useState<MenuItem[]>([]);
   const [menuLoading, setMenuLoading] = useState(true);
+
+  const getBaseName = (baseId: string) => {
+    const b = bases.find(item => item.id === baseId);
+    return b ? b.name : (FALLBACK_BASES.find(item => item.id === baseId)?.name || baseId);
+  };
+
+  const getPizzaName = (pizzaId: string) => {
+    const p = pizzas.find(item => item.id === pizzaId);
+    return p ? p.name : (FALLBACK_PIZZAS.find(item => item.id === pizzaId)?.name || pizzaId);
+  };
 
   // Step 1: Customer Details State
   const [customerName, setCustomerName] = useState('');
@@ -102,6 +117,7 @@ export default function App() {
   const [adminPaymentFilter, setAdminPaymentFilter] = useState<string>('All');
   const [orderStatuses, setOrderStatuses] = useState<Record<string, string>>({});
   const [printedOrders, setPrintedOrders] = useState<Record<string, boolean>>({});
+  const [kotPreviewOrder, setKotPreviewOrder] = useState<OrderPayload | null>(null);
 
   // AI Flavor Guru structured recommendation states
   const [guruRecommendation, setGuruRecommendation] = useState<{
@@ -625,6 +641,46 @@ export default function App() {
     return sub - disc + gst;
   };
 
+  const getShareUrl = () => {
+    if (typeof window === 'undefined') return '';
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.delete('name');
+      url.searchParams.delete('phone');
+      url.searchParams.delete('step');
+      url.searchParams.delete('base');
+      url.searchParams.delete('pizza');
+      url.searchParams.delete('toppings');
+      url.searchParams.delete('qty');
+      url.searchParams.delete('payment');
+      url.searchParams.delete('cart');
+
+      if (customerName) url.searchParams.set('name', encodeURIComponent(customerName));
+      if (customerPhone) url.searchParams.set('phone', encodeURIComponent(customerPhone));
+      url.searchParams.set('step', '5');
+      if (selectedBase?.id) url.searchParams.set('base', selectedBase.id);
+      if (selectedPizza?.id) url.searchParams.set('pizza', selectedPizza.id);
+      if (selectedToppings && selectedToppings.length > 0) {
+        url.searchParams.set('toppings', selectedToppings.map(t => t.id).join(','));
+      }
+      if (quantity) url.searchParams.set('qty', String(quantity));
+      url.searchParams.set('payment', 'Cash');
+
+      if (cart && cart.length > 0) {
+        const minifiedCart = cart.map(item => ({
+          b: item.base.id,
+          p: item.pizza.id,
+          t: item.toppings.map((tp: any) => tp.id),
+          q: item.quantity
+        }));
+        url.searchParams.set('cart', encodeURIComponent(JSON.stringify(minifiedCart)));
+      }
+      return url.toString();
+    } catch (e) {
+      return window.location.href;
+    }
+  };
+
   // Submit order to database
   const handleConfirmOrder = async () => {
     setIsSubmitting(true);
@@ -645,7 +701,8 @@ export default function App() {
       gst_amount: getGst(),
       final_payable: getGrandTotal(),
       toppings: cart[0]?.toppings || [],
-      cart: cart // The complete modular shopping cart array
+      cart: cart, // The complete modular shopping cart array
+      status: 'Kitchen Sync'
     };
 
     try {
@@ -701,7 +758,8 @@ export default function App() {
       gst_amount: getGst(),
       final_payable: getGrandTotal(),
       toppings: cart[0]?.toppings || [],
-      cart: cart
+      cart: cart,
+      status: 'Kitchen Sync'
     };
 
     try {
@@ -763,10 +821,155 @@ export default function App() {
     try {
       const data = await fetchAllOrders();
       setAllOrders(data);
+      
+      // Synchronize database status with client view state
+      const statuses: Record<string, string> = {};
+      data.forEach(order => {
+        statuses[String(order.id)] = order.status || 'Kitchen Sync';
+      });
+      setOrderStatuses(statuses);
     } catch (e) {
       console.error('Failed to load orders for admin', e);
     } finally {
       setOrdersLoading(false);
+    }
+  };
+
+  const handleUpdateStatus = async (orderId: string | number, newStatus: string) => {
+    const orderIdStr = String(orderId);
+    setOrderStatuses(prev => ({ ...prev, [orderIdStr]: newStatus }));
+    try {
+      await updateOrderStatusInDb(orderId, newStatus);
+    } catch (e) {
+      console.error('Failed to update status in database:', e);
+    }
+  };
+
+  const handlePrintTicket = (order: OrderPayload) => {
+    const orderIdStr = String(order.id || '');
+    setPrintedOrders(prev => ({ ...prev, [orderIdStr]: true }));
+    setTimeout(() => {
+      setPrintedOrders(prev => ({ ...prev, [orderIdStr]: false }));
+    }, 2000);
+
+    // Set preview modal order so the user sees a visual response instantly
+    setKotPreviewOrder(order);
+
+    // Try to trigger a silent/popup browser print for KOT (if popup allowed)
+    try {
+      const printWindow = window.open('', '_blank', 'width=350,height=500');
+      if (printWindow) {
+        const orderIdShort = orderIdStr.slice(-4).toUpperCase();
+        const dateStr = order.created_at ? new Date(order.created_at).toLocaleString('en-IN') : new Date().toLocaleString('en-IN');
+        
+        let itemsHtml = '';
+        if (order.cart && order.cart.length > 0) {
+          order.cart.forEach((item: any) => {
+            const pizzaName = item.pizza?.name || 'Pizza';
+            const baseName = item.base?.name || 'Base';
+            const toppingsList = item.toppings && item.toppings.length > 0
+              ? item.toppings.map((t: any) => t.name).join(', ')
+              : 'Plain';
+            itemsHtml += `
+              <div style="border-bottom: 1px dashed #ccc; padding: 6px 0; font-family: monospace;">
+                <div style="display: flex; justify-content: space-between; font-weight: bold; font-size: 13px;">
+                  <span>${item.quantity}x ${pizzaName}</span>
+                </div>
+                <div style="font-size: 11px; color: #444; margin-left: 8px;">• Crust: ${baseName}</div>
+                <div style="font-size: 11px; color: #d97706; margin-left: 8px;">• Toppings: ${toppingsList}</div>
+              </div>
+            `;
+          });
+        } else {
+          const pizzaName = getPizzaName(order.pizza_id);
+          const baseName = getBaseName(order.base_id);
+          const toppingsList = order.toppings && order.toppings.length > 0
+            ? order.toppings.map((t: any) => t.name).join(', ')
+            : 'Plain';
+          itemsHtml += `
+            <div style="border-bottom: 1px dashed #ccc; padding: 6px 0; font-family: monospace;">
+              <div style="display: flex; justify-content: space-between; font-weight: bold; font-size: 13px;">
+                <span>${order.quantity}x ${pizzaName}</span>
+              </div>
+              <div style="font-size: 11px; color: #444; margin-left: 8px;">• Crust: ${baseName}</div>
+              <div style="font-size: 11px; color: #d97706; margin-left: 8px;">• Toppings: ${toppingsList}</div>
+            </div>
+          `;
+        }
+
+        printWindow.document.write(`
+          <html>
+            <head>
+              <title>SliceMatic KOT #${orderIdShort}</title>
+              <style>
+                body {
+                  font-family: 'Courier New', monospace;
+                  padding: 15px;
+                  color: #000;
+                  background: #fff;
+                  margin: 0;
+                  font-size: 12px;
+                }
+                .header {
+                  text-align: center;
+                  border-bottom: 2px dashed #000;
+                  padding-bottom: 8px;
+                  margin-bottom: 8px;
+                }
+                .title {
+                  font-size: 16px;
+                  font-weight: bold;
+                  margin: 4px 0;
+                }
+                .meta {
+                  margin-bottom: 10px;
+                  font-size: 11px;
+                  line-height: 1.3;
+                }
+                .footer {
+                  border-top: 2px dashed #000;
+                  margin-top: 15px;
+                  padding-top: 8px;
+                  text-align: center;
+                  font-size: 10px;
+                }
+                @media print {
+                  body { padding: 0; margin: 0; }
+                }
+              </style>
+            </head>
+            <body>
+              <div class="header">
+                <div style="font-size: 12px; font-weight: bold; letter-spacing: 1px;">SLICEMATIC PIZZA</div>
+                <div class="title">KITCHEN TICKET (KOT)</div>
+              </div>
+              <div class="meta">
+                <div><strong>KOT ID:</strong> #${orderIdShort}</div>
+                <div><strong>DATE:</strong> ${dateStr}</div>
+                <div><strong>CUSTOMER:</strong> ${order.customer_name}</div>
+                <div><strong>PHONE:</strong> +91 ${order.customer_phone}</div>
+                <div><strong>PAYMENT:</strong> ${order.payment_mode}</div>
+              </div>
+              <div style="border-top: 1px dashed #000; margin-top: 5px;">
+                ${itemsHtml}
+              </div>
+              <div class="footer">
+                <div>* DISPATCH DEPARTMENT COPY *</div>
+                <div style="margin-top: 4px; font-size: 8px;">SliceMatic Real-Time Operations</div>
+              </div>
+              <script>
+                window.onload = function() {
+                  window.print();
+                  setTimeout(function() { window.close(); }, 500);
+                };
+              </script>
+            </body>
+          </html>
+        `);
+        printWindow.document.close();
+      }
+    } catch (e) {
+      console.warn('Blocked by popup blocker, showing print preview modal.', e);
     }
   };
 
@@ -1103,24 +1306,33 @@ export default function App() {
                       )}
                     </div>
 
-                    {/* Payment Selection */}
+                     {/* Payment Selection */}
                     <div className="space-y-2">
                       <label className="text-xs font-bold text-neutral-500 uppercase tracking-wider block">Preferred Payment Mode</label>
                       <div className="grid grid-cols-3 gap-3 max-w-md">
-                        {['Cash', 'Card', 'UPI'].map((mode) => (
-                          <button
-                            key={mode}
-                            onClick={() => setPaymentMode(mode)}
-                            className={`p-4 rounded-2xl border text-center font-bold text-xs transition cursor-pointer ${
-                              paymentMode === mode
-                                ? 'border-orange-500 bg-orange-50/40 text-orange-700 ring-2 ring-orange-100'
-                                : 'border-neutral-200 bg-white hover:bg-neutral-50 text-neutral-600'
-                            }`}
-                          >
-                            {mode}
-                          </button>
-                        ))}
+                        {['Cash', 'Card', 'UPI'].map((mode) => {
+                          const isCashAndCustomer = mode === 'Cash' && !isAdminMode;
+                          return (
+                            <button
+                              key={mode}
+                              onClick={() => setPaymentMode(mode)}
+                              className={`p-4 rounded-2xl border text-center font-bold text-xs transition cursor-pointer flex flex-col items-center justify-center gap-1 ${
+                                paymentMode === mode
+                                  ? 'border-orange-500 bg-orange-50/40 text-orange-700 ring-2 ring-orange-100'
+                                  : 'border-neutral-200 bg-white hover:bg-neutral-50 text-neutral-600'
+                              }`}
+                            >
+                              <span className="font-sans font-extrabold">{isCashAndCustomer ? 'Cash (At Counter)' : mode}</span>
+                            </button>
+                          );
+                        })}
                       </div>
+                      {paymentMode === 'Cash' && !isAdminMode && (
+                        <p className="text-[11px] text-amber-600 font-bold flex items-center gap-1.5 animate-fade-in pl-1 pt-1">
+                          <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse shrink-0" />
+                          Note: Pay at Counter cash orders require a QR code scan at the billing desk.
+                        </p>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -1346,13 +1558,15 @@ export default function App() {
                   <div className="space-y-1">
                     <h2 className="text-xl font-black text-neutral-900 tracking-tight">Step 5: Order Confirmation</h2>
                     <p className="text-xs text-neutral-400">
-                      Verify your selections below and finalize your order.
+                      {paymentMode === 'Cash' && !isAdminMode 
+                        ? 'Present this QR Code to the cashier at the counter to pay and finalize your order.'
+                        : 'Verify your selections below and finalize your order.'}
                     </p>
                   </div>
 
                   {orderComplete ? (
-                    <div className="bg-emerald-50 border border-emerald-100 rounded-3xl p-6 text-center space-y-4">
-                      <div className="w-12 h-12 bg-emerald-500 text-white rounded-full flex items-center justify-center mx-auto shadow-md">
+                    <div className="bg-emerald-50 border border-emerald-100 rounded-3xl p-6 text-center space-y-4 animate-fade-in">
+                      <div className="w-12 h-12 bg-emerald-500 text-white rounded-full flex items-center justify-center mx-auto shadow-md animate-bounce">
                         <Check className="w-6 h-6" />
                       </div>
                       <div className="space-y-1">
@@ -1369,6 +1583,58 @@ export default function App() {
                         >
                           <RotateCcw className="w-3.5 h-3.5" /> Launch New Order
                         </button>
+                      </div>
+                    </div>
+                  ) : paymentMode === 'Cash' && !isAdminMode ? (
+                    <div className="space-y-4 animate-fade-in">
+                      <div className="bg-amber-50 border border-amber-200/60 rounded-3xl p-6 space-y-5 text-center relative overflow-hidden">
+                        {/* Background subtle design flair */}
+                        <div className="absolute -right-8 -bottom-8 w-32 h-32 rounded-full bg-amber-500/5 blur-xl pointer-events-none" />
+                        
+                        <div className="space-y-2">
+                          <div className="inline-flex p-3 rounded-2xl bg-amber-100 text-amber-700 mx-auto">
+                            <QrCode className="w-6 h-6 animate-pulse" />
+                          </div>
+                          <h3 className="text-base font-black text-neutral-900 tracking-tight">Pay & Complete Order at Counter</h3>
+                          <p className="text-xs text-neutral-600 max-w-xs mx-auto leading-relaxed">
+                            Show this QR Code to the counter operator. They will scan your customized pizza configuration, collect your cash payment, and immediately submit your order to the kitchen.
+                          </p>
+                        </div>
+
+                        {/* Interactive QR Code Display */}
+                        <div className="bg-white p-5 rounded-2xl border border-neutral-200/60 inline-block shadow-sm">
+                          <QRCodeSVG 
+                            value={getShareUrl()} 
+                            size={160}
+                            bgColor="#ffffff"
+                            fgColor="#171717"
+                            level="Q"
+                            includeMargin={true}
+                          />
+                        </div>
+
+                        <div className="space-y-1 max-w-xs mx-auto">
+                          <span className="text-[10px] text-neutral-400 font-bold uppercase tracking-widest block font-mono">Mobile Sync URL</span>
+                          <div className="text-[10px] text-neutral-500 font-mono bg-white/85 px-2 py-1.5 rounded-lg truncate border border-neutral-200/50">
+                            {getShareUrl()}
+                          </div>
+                        </div>
+
+                        <div className="pt-2 flex justify-center gap-2">
+                          <button
+                            onClick={async () => {
+                              try {
+                                await navigator.clipboard.writeText(getShareUrl());
+                                alert("Order URL link copied to clipboard!");
+                              } catch (err) {
+                                console.warn('[SliceMatic] Failed to copy link');
+                              }
+                            }}
+                            className="bg-neutral-900 hover:bg-neutral-800 text-white font-sans font-bold text-[10px] uppercase tracking-wider py-2.5 px-4 rounded-xl transition cursor-pointer shadow-sm"
+                          >
+                            Copy Order Link
+                          </button>
+                        </div>
                       </div>
                     </div>
                   ) : (
@@ -1994,12 +2260,7 @@ export default function App() {
                                           <div className="flex items-center justify-center gap-1.5 font-sans">
                                             {/* KOT Printing */}
                                             <button
-                                              onClick={() => {
-                                                setPrintedOrders(prev => ({ ...prev, [orderIdStr]: true }));
-                                                setTimeout(() => {
-                                                  setPrintedOrders(prev => ({ ...prev, [orderIdStr]: false }));
-                                                }, 2000);
-                                              }}
+                                              onClick={() => handlePrintTicket(order)}
                                               className="p-1 text-neutral-500 hover:text-neutral-900 border border-neutral-200 rounded-lg hover:bg-neutral-50 transition cursor-pointer"
                                               title="Print Kitchen Ticket"
                                             >
@@ -2009,7 +2270,7 @@ export default function App() {
                                             {/* Advanced operations pipeline progression */}
                                             {currentStatus === 'Kitchen Sync' && (
                                               <button
-                                                onClick={() => setOrderStatuses(prev => ({ ...prev, [orderIdStr]: 'Prep' }))}
+                                                onClick={() => handleUpdateStatus(order.id || idx, 'Prep')}
                                                 className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[9px] uppercase tracking-wider px-2 py-1 rounded transition shadow-xs cursor-pointer"
                                               >
                                                 Start Prep
@@ -2017,7 +2278,7 @@ export default function App() {
                                             )}
                                             {currentStatus === 'Prep' && (
                                               <button
-                                                onClick={() => setOrderStatuses(prev => ({ ...prev, [orderIdStr]: 'Ready' }))}
+                                                onClick={() => handleUpdateStatus(order.id || idx, 'Ready')}
                                                 className="bg-teal-600 hover:bg-teal-700 text-white font-bold text-[9px] uppercase tracking-wider px-2 py-1 rounded transition shadow-xs cursor-pointer"
                                               >
                                                 Mark Ready
@@ -2025,7 +2286,7 @@ export default function App() {
                                             )}
                                             {currentStatus === 'Ready' && (
                                               <button
-                                                onClick={() => setOrderStatuses(prev => ({ ...prev, [orderIdStr]: 'Complete' }))}
+                                                onClick={() => handleUpdateStatus(order.id || idx, 'Complete')}
                                                 className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[9px] uppercase tracking-wider px-2 py-1 rounded transition shadow-xs cursor-pointer"
                                               >
                                                 Dispatch
@@ -2348,6 +2609,250 @@ export default function App() {
           )}
         </p>
       </footer>
+
+      {/* KOT Print Preview Modal */}
+      {kotPreviewOrder && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center z-50 p-4 overflow-y-auto animate-fade-in">
+          <div className="bg-neutral-900 border border-neutral-800 rounded-3xl max-w-sm w-full overflow-hidden shadow-2xl relative">
+            
+            {/* Modal Header */}
+            <div className="p-5 border-b border-neutral-800 flex items-center justify-between bg-neutral-950">
+              <div className="flex items-center gap-2">
+                <Printer className="w-5 h-5 text-amber-500" />
+                <span className="font-sans font-extrabold text-neutral-100 tracking-tight text-sm">KOT Print Spooler</span>
+              </div>
+              <button
+                onClick={() => setKotPreviewOrder(null)}
+                className="text-neutral-400 hover:text-neutral-100 transition cursor-pointer p-1 rounded-lg hover:bg-neutral-800"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Thermal Ticket Container */}
+            <div className="p-6 bg-neutral-900 flex justify-center">
+              <div className="bg-white text-neutral-950 p-6 w-full rounded-md shadow-inner border border-neutral-300 font-mono text-[11px] leading-relaxed relative overflow-hidden">
+                
+                {/* Visual Torn Receipt Top Edge */}
+                <div className="absolute top-0 inset-x-0 h-1 flex justify-between overflow-hidden opacity-30">
+                  {Array.from({ length: 20 }).map((_, i) => (
+                    <span key={i} className="w-2 h-2 bg-neutral-800 rotate-45 transform -translate-y-1"></span>
+                  ))}
+                </div>
+
+                <div className="text-center border-b border-dashed border-neutral-950 pb-3 mb-3">
+                  <div className="font-sans font-black tracking-widest text-base">SLICEMATIC</div>
+                  <div className="text-[10px] tracking-wide text-neutral-500 font-bold uppercase mt-0.5">Kitchen Order Ticket (KOT)</div>
+                </div>
+
+                <div className="space-y-1 pb-3 mb-3 border-b border-dashed border-neutral-950">
+                  <div className="flex justify-between">
+                    <span><strong>TICKET ID:</strong></span>
+                    <span>#{String(kotPreviewOrder.id || '').slice(-4).toUpperCase()}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span><strong>DATE:</strong></span>
+                    <span>{kotPreviewOrder.created_at ? new Date(kotPreviewOrder.created_at).toLocaleString('en-IN') : new Date().toLocaleString('en-IN')}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span><strong>CUSTOMER:</strong></span>
+                    <span className="max-w-[150px] truncate text-right">{kotPreviewOrder.customer_name}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span><strong>PHONE:</strong></span>
+                    <span>+91 {kotPreviewOrder.customer_phone}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span><strong>PAYMENT:</strong></span>
+                    <span>{kotPreviewOrder.payment_mode}</span>
+                  </div>
+                </div>
+
+                {/* Items detail list */}
+                <div className="space-y-3 pb-3 border-b border-dashed border-neutral-950">
+                  {kotPreviewOrder.cart && kotPreviewOrder.cart.length > 0 ? (
+                    kotPreviewOrder.cart.map((item: any, i: number) => {
+                      const pizzaName = item.pizza?.name || 'Pizza';
+                      const baseName = item.base?.name || 'Base';
+                      const toppingsList = item.toppings && item.toppings.length > 0
+                        ? item.toppings.map((t: any) => t.name).join(', ')
+                        : 'Plain';
+                      return (
+                        <div key={i} className="space-y-0.5">
+                          <div className="flex justify-between font-bold text-xs">
+                            <span>{item.quantity}x {pizzaName}</span>
+                          </div>
+                          <div className="text-[10px] text-neutral-600 pl-2">• Crust: {baseName}</div>
+                          <div className="text-[10px] text-amber-700 pl-2 font-bold">• Toppings: {toppingsList}</div>
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <div className="space-y-0.5">
+                      <div className="flex justify-between font-bold text-xs">
+                        <span>{kotPreviewOrder.quantity}x {getPizzaName(kotPreviewOrder.pizza_id)}</span>
+                      </div>
+                      <div className="text-[10px] text-neutral-600 pl-2">• Crust: {getBaseName(kotPreviewOrder.base_id)}</div>
+                      <div className="text-[10px] text-amber-700 pl-2 font-bold">
+                        • Toppings: {kotPreviewOrder.toppings && kotPreviewOrder.toppings.length > 0
+                          ? kotPreviewOrder.toppings.map((t: any) => t.name).join(', ')
+                          : 'Plain'}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Footer notes */}
+                <div className="text-center pt-3 text-[9px] text-neutral-400 space-y-0.5">
+                  <div className="font-bold text-neutral-700 tracking-wider">* DISPATCH DEPT COPY *</div>
+                  <div>Slicematic Real-Time Operations</div>
+                </div>
+
+                {/* Visual Torn Receipt Bottom Edge */}
+                <div className="absolute bottom-0 inset-x-0 h-1 flex justify-between overflow-hidden opacity-30">
+                  {Array.from({ length: 20 }).map((_, i) => (
+                    <span key={i} className="w-2 h-2 bg-neutral-800 rotate-45 transform translate-y-1"></span>
+                  ))}
+                </div>
+
+              </div>
+            </div>
+
+            {/* Print Trigger Tray */}
+            <div className="p-4 bg-neutral-950 border-t border-neutral-800 flex gap-3">
+              <button
+                onClick={() => setKotPreviewOrder(null)}
+                className="flex-1 bg-neutral-800 hover:bg-neutral-700 text-neutral-300 hover:text-neutral-100 font-sans font-bold text-xs py-3 rounded-xl transition cursor-pointer"
+              >
+                Close Spooler
+              </button>
+              <button
+                onClick={() => {
+                  // Direct print call to trigger the browser's physical print
+                  const orderIdStr = String(kotPreviewOrder.id || '');
+                  const orderIdShort = orderIdStr.slice(-4).toUpperCase();
+                  const dateStr = kotPreviewOrder.created_at ? new Date(kotPreviewOrder.created_at).toLocaleString('en-IN') : new Date().toLocaleString('en-IN');
+                  
+                  const pWindow = window.open('', '_blank', 'width=350,height=500');
+                  if (pWindow) {
+                    let itemsHtml = '';
+                    if (kotPreviewOrder.cart && kotPreviewOrder.cart.length > 0) {
+                      kotPreviewOrder.cart.forEach((item: any) => {
+                        const pizzaName = item.pizza?.name || 'Pizza';
+                        const baseName = item.base?.name || 'Base';
+                        const toppingsList = item.toppings && item.toppings.length > 0
+                          ? item.toppings.map((t: any) => t.name).join(', ')
+                          : 'Plain';
+                        itemsHtml += `
+                          <div style="border-bottom: 1px dashed #ccc; padding: 6px 0; font-family: monospace;">
+                            <div style="display: flex; justify-content: space-between; font-weight: bold; font-size: 13px;">
+                              <span>${item.quantity}x ${pizzaName}</span>
+                            </div>
+                            <div style="font-size: 11px; color: #444; margin-left: 8px;">• Crust: ${baseName}</div>
+                            <div style="font-size: 11px; color: #d97706; margin-left: 8px;">• Toppings: ${toppingsList}</div>
+                          </div>
+                        `;
+                      });
+                    } else {
+                      const pizzaName = getPizzaName(kotPreviewOrder.pizza_id);
+                      const baseName = getBaseName(kotPreviewOrder.base_id);
+                      const toppingsList = kotPreviewOrder.toppings && kotPreviewOrder.toppings.length > 0
+                        ? kotPreviewOrder.toppings.map((t: any) => t.name).join(', ')
+                        : 'Plain';
+                      itemsHtml += `
+                        <div style="border-bottom: 1px dashed #ccc; padding: 6px 0; font-family: monospace;">
+                          <div style="display: flex; justify-content: space-between; font-weight: bold; font-size: 13px;">
+                            <span>${kotPreviewOrder.quantity}x ${pizzaName}</span>
+                          </div>
+                          <div style="font-size: 11px; color: #444; margin-left: 8px;">• Crust: ${baseName}</div>
+                          <div style="font-size: 11px; color: #d97706; margin-left: 8px;">• Toppings: ${toppingsList}</div>
+                        </div>
+                      `;
+                    }
+
+                    pWindow.document.write(`
+                      <html>
+                        <head>
+                          <title>SliceMatic KOT #${orderIdShort}</title>
+                          <style>
+                            body {
+                              font-family: 'Courier New', monospace;
+                              padding: 15px;
+                              color: #000;
+                              background: #fff;
+                              margin: 0;
+                              font-size: 12px;
+                            }
+                            .header {
+                              text-align: center;
+                              border-bottom: 2px dashed #000;
+                              padding-bottom: 8px;
+                              margin-bottom: 8px;
+                            }
+                            .title {
+                              font-size: 16px;
+                              font-weight: bold;
+                              margin: 4px 0;
+                            }
+                            .meta {
+                              margin-bottom: 10px;
+                              font-size: 11px;
+                              line-height: 1.3;
+                            }
+                            .footer {
+                              border-top: 2px dashed #000;
+                              margin-top: 15px;
+                              padding-top: 8px;
+                              text-align: center;
+                              font-size: 10px;
+                            }
+                            @media print {
+                              body { padding: 0; margin: 0; }
+                            }
+                          </style>
+                        </head>
+                        <body>
+                          <div class="header">
+                            <div style="font-size: 12px; font-weight: bold; letter-spacing: 1px;">SLICEMATIC PIZZA</div>
+                            <div class="title">KITCHEN TICKET (KOT)</div>
+                          </div>
+                          <div class="meta">
+                            <div><strong>KOT ID:</strong> #${orderIdShort}</div>
+                            <div><strong>DATE:</strong> ${dateStr}</div>
+                            <div><strong>CUSTOMER:</strong> ${kotPreviewOrder.customer_name}</div>
+                            <div><strong>PHONE:</strong> +91 ${kotPreviewOrder.customer_phone}</div>
+                            <div><strong>PAYMENT:</strong> ${kotPreviewOrder.payment_mode}</div>
+                          </div>
+                          <div style="border-top: 1px dashed #000; margin-top: 5px;">
+                            ${itemsHtml}
+                          </div>
+                          <div class="footer">
+                            <div>* DISPATCH DEPARTMENT COPY *</div>
+                            <div style="margin-top: 4px; font-size: 8px;">SliceMatic Real-Time Operations</div>
+                          </div>
+                          <script>
+                            window.onload = function() {
+                              window.print();
+                              setTimeout(function() { window.close(); }, 500);
+                            };
+                          </script>
+                        </body>
+                      </html>
+                    `);
+                    pWindow.document.close();
+                  } else {
+                    alert("Please allow popups to open the printer window, or print using your browser's Print option.");
+                  }
+                }}
+                className="flex-1 bg-amber-500 hover:bg-amber-600 text-neutral-950 font-sans font-black text-xs py-3 rounded-xl transition cursor-pointer flex items-center justify-center gap-1.5"
+              >
+                <Printer className="w-4 h-4" /> Print KOT
+              </button>
+            </div>
+
+          </div>
+        </div>
+      )}
     </div>
   );
 }

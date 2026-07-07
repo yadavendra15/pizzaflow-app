@@ -31,6 +31,7 @@ export interface OrderPayload {
   created_at?: string;
   id?: string | number;
   cart?: CartItem[];
+  status?: string;
 }
 
 // Fallback initial menu lists directly copied from Stage 2 data files
@@ -162,7 +163,8 @@ export async function submitOrderToDb(payload: OrderPayload): Promise<{ success:
   const localRecord = {
     ...payload,
     id: localId,
-    created_at: new Date().toISOString()
+    created_at: new Date().toISOString(),
+    status: payload.status || 'Kitchen Sync'
   };
   localOrders.unshift(localRecord);
   localStorage.setItem('slicematic_local_orders', JSON.stringify(localOrders));
@@ -186,7 +188,8 @@ export async function submitOrderToDb(payload: OrderPayload): Promise<{ success:
     subtotal: payload.base_total,
     discount_amount: payload.discount_amount,
     gst_amount: payload.gst_amount,
-    final_payable: payload.final_payable
+    final_payable: payload.final_payable,
+    status: payload.status || 'Kitchen Sync'
   };
 
   let retryCount = 0;
@@ -413,7 +416,8 @@ export async function fetchAllOrders(): Promise<OrderPayload[]> {
             gst_amount: Number(order.gst_amount),
             final_payable: Number(order.final_payable),
             toppings,
-            created_at: order.created_at
+            created_at: order.created_at,
+            status: order.status || 'Kitchen Sync'
           };
         });
 
@@ -557,6 +561,42 @@ export async function saveDiscountThresholdToDb(threshold: number): Promise<bool
     return true;
   } catch (err) {
     console.warn('[SliceMatic] Failed to save discount threshold to DB fallback:', err);
+    return false;
+  }
+}
+
+// 6. Update order status in local storage and database
+export async function updateOrderStatusInDb(orderId: string | number, status: string): Promise<boolean> {
+  // Update in LocalStorage
+  try {
+    const localOrders: OrderPayload[] = JSON.parse(localStorage.getItem('slicematic_local_orders') || '[]');
+    const updatedLocal = localOrders.map(o => {
+      if (String(o.id) === String(orderId)) {
+        return { ...o, status };
+      }
+      return o;
+    });
+    localStorage.setItem('slicematic_local_orders', JSON.stringify(updatedLocal));
+  } catch (err) {
+    console.warn('[SliceMatic] Failed to update status in localStorage', err);
+  }
+
+  const client = getSupabase();
+  if (!client) return true; // Offline / Simulation success
+
+  try {
+    const { error } = await client
+      .from('orders')
+      .update({ status: status })
+      .eq('id', orderId);
+
+    if (error) {
+      console.warn('[SliceMatic] Failed to update status in Supabase:', error.message);
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.error('[SliceMatic] Error updating order status in DB:', err);
     return false;
   }
 }

@@ -127,8 +127,12 @@ CREATE TABLE IF NOT EXISTS orders (
   discount_amount NUMERIC(10, 2) NOT NULL,
   gst_amount NUMERIC(10, 2) NOT NULL,
   final_payable NUMERIC(10, 2) NOT NULL,
+  status TEXT DEFAULT 'Kitchen Sync',
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
+
+-- Note: If you have already created the orders table, run this migration:
+-- ALTER TABLE orders ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'Kitchen Sync';
 
 -- 6. Create Order Line Items Table (For Toppings breakdowns)
 CREATE TABLE IF NOT EXISTS order_line_items (
