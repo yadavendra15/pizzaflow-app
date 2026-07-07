@@ -29,7 +29,7 @@ async function startServer() {
   // AI Smart Upsell proxy calling OpenRouter Gemini 2.5 Flash
   app.post('/api/smart-upsell', async (req, res) => {
     try {
-      const { cart } = req.body;
+      const { cart, availableBases, availableToppings } = req.body;
       const apiKey = process.env.OPENROUTER_API_KEY || process.env.GEMINI_API_KEY;
 
       // Safe fallback recommendations based on pizza style
@@ -84,24 +84,39 @@ async function startServer() {
         });
       }
 
+      // Compile dynamic list of valid bases and toppings
+      let basesStr = "B1 (Thin Crust), B2 (Thick Crust), B3 (Cheese Burst), B4 (Whole Wheat), B5 (Multigrain)";
+      let toppingsStr = "T1 (Black Olives), T2 (Extra Cheese), T3 (Button Mushrooms), T4 (Green Peppers), T5 (Jalapenos), T6 (Sun-Dried Tomatoes), T7 (Caramelised Onions), T8 (Sweet Corn), T9 (Roasted Garlic), T10 (Peri-Peri Drizzle)";
+      let premiumBasesStr = "B3, B4, B5";
+
+      if (Array.isArray(availableBases) && availableBases.length > 0) {
+        basesStr = availableBases.map((b: any) => `${b.id} (${b.name})`).join(', ');
+        const sortedBases = [...availableBases].sort((a: any, b: any) => Number(a.price || 0) - Number(b.price || 0));
+        const premiumBases = sortedBases.slice(Math.ceil(sortedBases.length / 2));
+        premiumBasesStr = premiumBases.map((b: any) => b.id).join(', ');
+      }
+      if (Array.isArray(availableToppings) && availableToppings.length > 0) {
+        toppingsStr = availableToppings.map((t: any) => `${t.id} (${t.name})`).join(', ');
+      }
+
       const systemPrompt = `You are a culinary expert at SliceMatic. Analyze the customer's pizza order and recommend:
-1. A premium base upgrade if their base is B1 or B2 (B3 Cheese Burst, B4 Whole Wheat, B5 Multigrain)
-2. 1 or 2 extra toppings that pair perfectly with their pizza. Only suggest toppings they haven't already selected.
+1. A premium base upgrade if their current base is a low-priced base. Choose from these premium bases: [${premiumBasesStr}]
+2. 1 or 2 extra toppings that pair perfectly with their pizza. Only suggest from the available toppings list, and only suggest toppings they haven't already selected.
 
 You MUST respond ONLY with a valid JSON object in this exact format:
 {
   "explanation": "A warm, 1-2 sentence appetizing description of your gourmet recommendation.",
-  "recommendedBaseId": "B3" or null,
-  "recommendedToppingIds": ["T2", "T10"] or []
+  "recommendedBaseId": "<base_id_string>" or null,
+  "recommendedToppingIds": ["<topping_id_string_1>", "<topping_id_string_2>"] or []
 }
 
 CRITICAL: Return ONLY raw JSON. No markdown backticks, no markdown blocks, no other text outside the JSON.
-Valid Base IDs: B1 (Thin Crust), B2 (Thick Crust), B3 (Cheese Burst), B4 (Whole Wheat), B5 (Multigrain)
-Valid Topping IDs: T1 (Black Olives), T2 (Extra Cheese), T3 (Button Mushrooms), T4 (Green Peppers), T5 (Jalapenos), T6 (Sun-Dried Tomatoes), T7 (Caramelised Onions), T8 (Sweet Corn), T9 (Roasted Garlic), T10 (Peri-Peri Drizzle)
+Available Bases: ${basesStr}
+Available Toppings: ${toppingsStr}
 
 Rules:
 - Keep the explanation highly appetizing, friendly, and limited to exactly 1 or 2 sentences (under 25 words).
-- If they already have a premium base (B3, B4, B5), set recommendedBaseId to null.`;
+- If they already have a premium base, set recommendedBaseId to null.`;
 
       let formattedSelections = "";
       if (Array.isArray(cart)) {
@@ -160,8 +175,17 @@ Rules:
       try {
         parsed = JSON.parse(content);
       } catch (parseErr) {
-        console.warn('[SliceMatic] Failed to parse JSON from model output, using fallback', content);
-        parsed = getFallbackRecommendation();
+        try {
+          const jsonMatch = content.match(/\{[\s\S]*\}/);
+          if (jsonMatch) {
+            parsed = JSON.parse(jsonMatch[0]);
+          } else {
+            throw parseErr;
+          }
+        } catch (fallbackErr) {
+          console.warn('[SliceMatic] Failed to parse JSON from model output, using fallback', content);
+          parsed = getFallbackRecommendation();
+        }
       }
 
       res.json({

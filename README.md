@@ -1,6 +1,6 @@
 # SliceMatic Client Portal, Admin Panel & Operations Center
 
-SliceMatic is a premium, full-stack, production-grade pizza ordering client portal and real-time admin audit application. This solution replaces traditional manual order-taking Google Forms with an automated, responsive interface featuring a live visual canvas, precise mathematical billing engines, instant digital sharing, and an AI-powered smart upselling agent.
+SliceMatic is a premium, full-stack, production-grade pizza ordering client portal and real-time admin audit application. This solution replaces traditional manual order-taking with an automated, responsive interface featuring a live visual canvas, precise mathematical billing engines, instant digital sharing, and a dynamic, database-integrated AI smart upselling agent.
 
 ---
 
@@ -12,6 +12,8 @@ The application is structured as a full-stack, decoupled architecture designed f
 +--------------------------------------------------------------+
 |                     React Client Portal                      |
 | (Intake Validation, Live Canvas, Config Sync, QR Transfer)  |
+|                                                              |
+|        [Reads Menu and Passes Dynamic Items to Backend]      |
 +------------------------------+-------------------------------+
                                |
             +------------------+------------------+
@@ -26,8 +28,9 @@ The application is structured as a full-stack, decoupled architecture designed f
 
 1. **Frontend Layer (React 18 & Vite)**:
    - High-fidelity visual styling using utility-first **Tailwind CSS**.
-   - Dynamic, organic micro-interactions and layout transitions powered by `motion`.
+   - Dynamic, organic micro-interactions and layout transitions powered by `motion` (`motion/react`).
    - Complete multi-stage form flow spanning Customer Intake, Pizza Builder (Canvas & Topping offsets), Checkout Summary, and QR Transfer.
+   - Live synchronization of active menu listings (bases, pizzas, and toppings) directly passed down to the AI recommendation engine.
 
 2. **Database & Sync Layer (Supabase Serverless)**:
    - Fully relational schema managed via PostgreSQL tables.
@@ -35,30 +38,45 @@ The application is structured as a full-stack, decoupled architecture designed f
    - Real-time global settings synchronization: the operations configurations (e.g., dynamic discount pizza threshold) are fetched directly from a database-backed `configurations` table.
 
 3. **AI Integration Layer (OpenRouter / Google Gemini)**:
-   - Calls the `google/gemini-2.5-flash` model asynchronously.
+   - Calls the `google/gemini-2.5-flash` model asynchronously via an Express proxy.
    - Guarded with an `AbortController` timeout interceptor: if the model call takes longer than 2000ms, the portal silently displays appetizing local fallback defaults so as to never delay customer checkouts.
+   - Robust parsing system: features a dual-layer parser utilizing standard `JSON.parse` with a regular-expression regex matcher (`/\{[\s\S]*\}/`) fallback to handle raw LLM text wrappers, markdown blocks, or unexpected formatting gracefully.
 
 ---
 
-## 🤖 AI Feature Description: "AI Flavor Guru"
+## 🤖 Dynamic AI Feature: "AI Flavor Guru"
 
 ### Problem Solved
 Rajan's counter staff often forget to upsell premium additions (like changing a regular base to *Cheese Burst* or adding an extra topping like *Extra Cheese*), losing out on high-margin revenue.
 
-### How it Works
-The client portal watches the customer's base, pizza, and topping selections in real time. Before checkout, it invokes the **AI Flavor Guru**, which analyzes current ingredients to formulate a context-aware, appetizing recommendation.
+### How it Works (Dynamic Menu Integration)
+Rather than hardcoding static lists, the client portal reads your **live menu options** (bases and toppings) directly from the active database state and feeds them directly to the AI Engine. 
+
+- **Smart Base Upgrades**: The engine automatically analyzes the price points of all available bases, identifies which ones are budget-friendly, and dynamically selects higher-end premium crust options (e.g., Cheese Burst, Whole Wheat) to suggest as upgrades.
+- **Perfect Topping Pairings**: It cross-references current selections with all remaining database toppings to recommend 1 or 2 complementary pairings that the user hasn't already added to their pizza.
 
 ### System Prompt
 ```text
-You are a culinary expert at SliceMatic. Suggest a 1-2 sentence appetizing premium upsell recommendation (either a premium base like Cheese Burst or Whole Wheat, or an extra topping like Extra Cheese or Peri-Peri Drizzle) based on the customer's current order.
-CRITICAL RULE: Do NOT perform any math, price calculations, or number analysis. Keep your response appetizing, direct, and limited to exactly 1 or 2 sentences. No additional commentary, markdown formatting, or math.
+You are a culinary expert at SliceMatic. Analyze the customer's pizza order and recommend:
+1. A premium base upgrade if their current base is a low-priced base. Choose from these premium bases: [<dynamic_premium_bases>]
+2. 1 or 2 extra toppings that pair perfectly with their pizza. Only suggest from the available toppings list, and only suggest toppings they haven't already selected.
+
+You MUST respond ONLY with a valid JSON object in this exact format:
+{
+  "recommendedBaseId": "<base_id_string>" or null,
+  "recommendedToppingIds": ["<topping_id_string_1>", "<topping_id_string_2>"] or []
+}
+
+CRITICAL: Return ONLY raw JSON. No markdown backticks, no markdown blocks, no other text outside the JSON.
+Available Bases: <dynamic_bases_list>
+Available Toppings: <dynamic_toppings_list>
 ```
 
 ### Model Choice & Justification
 - **Model**: `google/gemini-2.5-flash`
 - **Why**: 
   - **Sub-second latency**: Ideal for responsive customer-facing interfaces.
-  - **Exceptional instruction adherence**: Strictly follows negative constraints (e.g., avoiding mathematical speculation/markdown formatting).
+  - **Exceptional instruction adherence**: Strictly follows structured output schemas and negative constraints (avoiding markdown or extra conversational text).
   - **Context-aware culinary intelligence**: Consistently yields natural-sounding, tempting, and relevant topping combinations.
 
 ---
@@ -179,12 +197,13 @@ Create a `.env` file in your root workspace (or configure the deployment secrets
 VITE_SUPABASE_URL=https://your-supabase-project.supabase.co
 VITE_SUPABASE_ANON_KEY=your-supabase-anon-key-string
 
-# AI Upsell API Configuration
+# AI Upsell API Configuration (Supports OpenRouter or native Gemini API Keys)
 OPENROUTER_API_KEY=your-openrouter-api-key-string
+GEMINI_API_KEY=your-gemini-api-key-string
 ```
 
 ### 2. Install & Start Development Server
-Ensure all node modules are configured, then spin up the fast Vite live server:
+Ensure all node modules are configured, then spin up the fast full-stack server (Vite + Express):
 ```bash
 npm install
 npm run dev
@@ -192,12 +211,12 @@ npm run dev
 - Open `http://localhost:3000` to view the application.
 
 ### 3. Build for Production Deployment
-To package the app cleanly for live hosting platforms (Vercel, Netlify, or direct container runtimes):
+To package the app cleanly for live hosting platforms (such as Vercel or direct container runtimes):
 ```bash
 npm run build
 npm start
 ```
-All static pages are compiled into `/dist` while the backend Express proxy initializes via `server.ts`.
+All static pages are compiled into `/dist` while the backend Express proxy compiles into CJS inside `dist/server.cjs` and launches securely.
 
 ---
 
@@ -207,10 +226,3 @@ The Operations Dashboard (accessible via the client layout using credentials `ad
 - **Order Entry Desk**: Enables floor staff to seamlessly submit custom walk-in bookings.
 - **Analytics View**: Visualizes order distributions, topping favorites, peak checkouts, and historical revenues.
 - **Configurations (Sync)**: A dedicated live dashboard to modify restaurant settings. Counter managers can increase or decrease the global **Discount Pizza Threshold** (e.g., from 5 pizzas to 3 pizzas) in a single click, instantly syncing the mathematical billing parameters for all live tablet customers.
-
----
-
-## 📦 Stage 3 Deliverables Checklist
-- **Production URL**: *(Insert Deployed Vercel/Cloud Run URL here)*
-- **Supabase DB Status**: Live & configured with SQL schemas + configurations key.
-- **System Video Walkthrough**: *(Insert Loom/Screen-share Video Link here)*

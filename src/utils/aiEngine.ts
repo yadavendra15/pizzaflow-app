@@ -15,7 +15,11 @@ export interface GuruRecommendation {
   recommendedToppingIds: string[];
 }
 
-export async function fetchSmartUpsell(cart: CartState): Promise<GuruRecommendation> {
+export async function fetchSmartUpsell(
+  cart: CartState,
+  availableBases?: Array<{ id: string; name: string; price: number }>,
+  availableToppings?: Array<{ id: string; name: string; price: number }>
+): Promise<GuruRecommendation> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => {
     controller.abort();
@@ -29,7 +33,7 @@ export async function fetchSmartUpsell(cart: CartState): Promise<GuruRecommendat
         'Content-Type': 'application/json',
       },
       signal: controller.signal,
-      body: JSON.stringify({ cart }),
+      body: JSON.stringify({ cart, availableBases, availableToppings }),
     });
 
     clearTimeout(timeoutId);

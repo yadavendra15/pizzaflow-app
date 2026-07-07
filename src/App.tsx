@@ -433,7 +433,7 @@ export default function App() {
       try {
         // Send the complete cart array or the current single pizza selection draft to AI analyzer
         const target = cart.length > 0 ? cart : { base: selectedBase, pizza: selectedPizza, toppings: selectedToppings };
-        const result = await fetchSmartUpsell(target as any);
+        const result = await fetchSmartUpsell(target as any, bases, toppings);
         setAiUpsellText(result.explanation);
         setGuruRecommendation(result);
 
