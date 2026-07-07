@@ -85,6 +85,12 @@ Available Toppings: <dynamic_toppings_list>
 
 Execute the following SQL script directly in your **Supabase SQL Editor** to establish the required tables and seed the menu items and initial configurations:
 
+### 🔒 Row Level Security (RLS) & Client Access
+* **Option A: Run without RLS (Easiest & Quickest)**
+  If you are in development or setting up a fast prototype, select **"Run without RLS"**. This allows the anonymous client-side application to instantly read and write to the tables without needing custom credentials or policies.
+* **Option B: Run and enable RLS (Recommended for Production)**
+  If you select **"Run and enable RLS"**, you **must** configure public/anonymous access policies on your tables. Otherwise, all queries from your browser will be blocked with permission errors. The script below includes the optional helper commands at the bottom to configure public policies for you automatically!
+
 ```sql
 -- 1. Create Bases Table
 CREATE TABLE IF NOT EXISTS bases (
@@ -144,6 +150,16 @@ CREATE TABLE IF NOT EXISTS order_line_items (
   price NUMERIC(10, 2) NOT NULL
 );
 
+-- 7. Create Order Items Table (Duplicate support for self-healing table detection)
+CREATE TABLE IF NOT EXISTS order_items (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  order_id BIGINT REFERENCES orders(id) ON DELETE CASCADE,
+  item_type TEXT NOT NULL, -- 'topping'
+  item_id TEXT NOT NULL,
+  item_name TEXT NOT NULL,
+  price NUMERIC(10, 2) NOT NULL
+);
+
 -- ==========================================
 -- SEED DATA (Direct from Stage 2 Data Files)
 -- ==========================================
@@ -187,6 +203,37 @@ ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, price = EXCLUDED.price;
 INSERT INTO configurations (key, value) VALUES
 ('discount_threshold', '5')
 ON CONFLICT (key) DO NOTHING;
+
+-- ========================================================
+-- OPTIONAL: PUBLIC POLICIES FOR ROW LEVEL SECURITY (RLS)
+-- ========================================================
+-- If you clicked "Run and enable RLS" in Supabase, execute these commands to enable public read/write permissions:
+
+-- Enable RLS (if not already enabled)
+ALTER TABLE bases ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pizzas ENABLE ROW LEVEL SECURITY;
+ALTER TABLE toppings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE configurations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE orders ENABLE ROW LEVEL SECURITY;
+ALTER TABLE order_line_items ENABLE ROW LEVEL SECURITY;
+ALTER TABLE order_items ENABLE ROW LEVEL SECURITY;
+
+-- Grant SELECT policies (Everyone can read)
+CREATE POLICY "Allow public read bases" ON bases FOR SELECT USING (true);
+CREATE POLICY "Allow public read pizzas" ON pizzas FOR SELECT USING (true);
+CREATE POLICY "Allow public read toppings" ON toppings FOR SELECT USING (true);
+CREATE POLICY "Allow public read configurations" ON configurations FOR SELECT USING (true);
+CREATE POLICY "Allow public read orders" ON orders FOR SELECT USING (true);
+CREATE POLICY "Allow public read order_line_items" ON order_line_items FOR SELECT USING (true);
+CREATE POLICY "Allow public read order_items" ON order_items FOR SELECT USING (true);
+
+-- Grant INSERT & UPDATE policies (Everyone can submit orders and update configs)
+CREATE POLICY "Allow public insert orders" ON orders FOR INSERT WITH CHECK (true);
+CREATE POLICY "Allow public update orders" ON orders FOR UPDATE USING (true);
+CREATE POLICY "Allow public insert order_line_items" ON order_line_items FOR INSERT WITH CHECK (true);
+CREATE POLICY "Allow public insert order_items" ON order_items FOR INSERT WITH CHECK (true);
+CREATE POLICY "Allow public update configurations" ON configurations FOR UPDATE USING (true);
+CREATE POLICY "Allow public insert configurations" ON configurations FOR INSERT WITH CHECK (true);
 ```
 
 ---
