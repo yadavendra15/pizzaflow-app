@@ -161,7 +161,12 @@ export default function App() {
   };
 
   const isAdminMode = currentPath === '/admin';
-  const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(false);
+  const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('slicematic_admin_logged_in') === 'true';
+    }
+    return false;
+  });
   const [adminEmail, setAdminEmail] = useState('');
   const [adminPassword, setAdminPassword] = useState('');
   const [adminError, setAdminError] = useState('');
@@ -174,6 +179,14 @@ export default function App() {
     setIsDbConnected(isSupabaseConfigured());
     loadMenuData();
     loadDiscountThreshold();
+
+    // Auto-fetch orders if the admin is already logged in on reload of the /admin page
+    if (window.location.pathname === '/admin') {
+      const loggedIn = localStorage.getItem('slicematic_admin_logged_in') === 'true';
+      if (loggedIn) {
+        fetchAdminOrders();
+      }
+    }
   }, []);
 
   const loadDiscountThreshold = async () => {
@@ -313,6 +326,10 @@ export default function App() {
           } catch (e) {
             console.warn('[SliceMatic] Failed to parse cart query parameter:', e);
           }
+        }
+
+        if (urlCart || urlBaseId || urlPizzaId || urlName) {
+          setAdminMenu('order-entry');
         }
       }
     } catch (e) {
@@ -645,6 +662,7 @@ export default function App() {
     if (typeof window === 'undefined') return '';
     try {
       const url = new URL(window.location.href);
+      url.pathname = '/admin'; // Redirect to admin portal on scan at billing counter
       url.searchParams.delete('name');
       url.searchParams.delete('phone');
       url.searchParams.delete('step');
@@ -810,6 +828,7 @@ export default function App() {
     // Offline bypass / Dev grading ease of testing
     if (adminEmail === 'admin@slicematic.com' && adminPassword === 'slicematic123') {
       setIsAdminLoggedIn(true);
+      localStorage.setItem('slicematic_admin_logged_in', 'true');
       fetchAdminOrders();
     } else {
       setAdminError('Invalid email credentials or passcode. (Use testing credentials: admin@slicematic.com / slicematic123)');
@@ -975,6 +994,7 @@ export default function App() {
 
   const handleAdminLogout = () => {
     setIsAdminLoggedIn(false);
+    localStorage.removeItem('slicematic_admin_logged_in');
     setAdminEmail('');
     setAdminPassword('');
     setAllOrders([]);
